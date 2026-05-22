@@ -108,6 +108,65 @@ function messageContentCount(): number {
   return document.querySelectorAll("message-content").length;
 }
 
+const NEW_CHAT_SELECTORS = [
+  'a[aria-label="Cuộc trò chuyện mới"]',
+  'a[aria-label="New chat"]',
+  'a[aria-label="New conversation"]',
+  "a.gem-nav-list-item[href='/app']",
+  "a.gem-nav-list-item[href=\"/app\"]",
+  "a.mat-mdc-list-item[href='/app']"
+];
+
+function isOnNewChatPage(): boolean {
+  try {
+    return /^(?:\/u\/\d+)?\/app\/?$/.test(new URL(location.href).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function findNewChatLink(): HTMLAnchorElement | null {
+  for (const sel of NEW_CHAT_SELECTORS) {
+    const el = document.querySelector(sel);
+    if (el instanceof HTMLAnchorElement && isNodeVisible(el)) return el;
+  }
+  for (const a of document.querySelectorAll<HTMLAnchorElement>(
+    "a.gem-nav-list-item[href='/app'], a[href='/app']"
+  )) {
+    if (!isNodeVisible(a)) continue;
+    const label = (a.getAttribute("aria-label") || a.textContent || "").toLowerCase();
+    if (
+      label.includes("mới") ||
+      label.includes("new") ||
+      label.includes("cuộc trò chuyện") ||
+      label.includes("conversation")
+    ) {
+      return a;
+    }
+  }
+  return null;
+}
+
+function clickElement(el: HTMLElement): void {
+  el.focus();
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+  el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  el.click();
+}
+
+function clickNewConversation(): boolean {
+  const link = findNewChatLink();
+  if (!link) return false;
+  if (link.getAttribute("aria-current") === "page" && isOnNewChatPage() && isComposerEmpty()) {
+    return true;
+  }
+  clickElement(link);
+  return true;
+}
+
 function clickSendButton(): boolean {
   for (const sel of SEND_SELECTORS) {
     const btn = document.querySelector(sel);
@@ -115,13 +174,7 @@ function clickSendButton(): boolean {
     if (!isNodeVisible(btn)) continue;
     if (btn.getAttribute("disabled") !== null) continue;
     if (btn.getAttribute("aria-disabled") === "true") continue;
-    btn.focus();
-    btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
-    btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
-    btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    btn.click();
+    clickElement(btn);
     return true;
   }
   return false;
@@ -143,6 +196,29 @@ function pressEnterFallback(): void {
   editor.dispatchEvent(new KeyboardEvent("keydown", opts));
   editor.dispatchEvent(new KeyboardEvent("keypress", opts));
   editor.dispatchEvent(new KeyboardEvent("keyup", opts));
+}
+
+function clearComposer(): boolean {
+  const editor = findBottomComposer();
+  if (!editor) return false;
+  editor.focus();
+  if (editor instanceof HTMLTextAreaElement) {
+    editor.value = "";
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true }));
+    return true;
+  }
+  editor.innerHTML = "";
+  editor.textContent = "";
+  editor.dispatchEvent(
+    new InputEvent("input", { bubbles: true, composed: true, cancelable: true, inputType: "deleteContentBackward" })
+  );
+  return true;
+}
+
+function isComposerEmpty(): boolean {
+  const editor = findBottomComposer();
+  if (!editor) return true;
+  return !(editor.innerText || editor.textContent || (editor instanceof HTMLTextAreaElement ? editor.value : "")).trim();
 }
 
 function setComposerPrompt(prompt: string): boolean {
@@ -638,6 +714,47 @@ function waitForStreamDone(timeoutMs: number): Promise<string | null> {
   });
 }
 
+async function prepareTabForNextChat(): Promise<{
+  ok: boolean;
+  composerCleared: boolean;
+  newChatOpened: boolean;
+}> {
+  resetStreamState();
+  disarmStreamInterceptor();
+  if (hasLoadingIndicator()) clickStopButton();
+  await sleep(150);
+
+  const prevCount = messageContentCount();
+  const needsNewChat = !isOnNewChatPage() || prevCount > 0 || !isComposerEmpty();
+
+  let newChatOpened = false;
+  if (needsNewChat) {
+    newChatOpened = clickNewConversation();
+    if (newChatOpened) {
+      try {
+        await waitForDomCondition(
+          () => {
+            const navLink = findNewChatLink();
+            if (navLink?.getAttribute("aria-current") === "page" && isComposerEmpty()) return true;
+            if (isOnNewChatPage() && isComposerEmpty() && messageContentCount() <= prevCount) return true;
+            return null;
+          },
+          12_000,
+          "new chat"
+        );
+      } catch {
+        // best effort — still clear composer below
+      }
+    }
+  } else {
+    newChatOpened = true;
+  }
+
+  clearComposer();
+  await sleep(100);
+  return { ok: true, composerCleared: isComposerEmpty(), newChatOpened };
+}
+
 async function sendGeminiPrompt(
   prompt: string,
   options?: {
@@ -811,6 +928,19 @@ export default defineContentScript({
       if (message?.type === "gemini.chat.stop") {
         const clicked = clickStopButton();
         sendResponse({ ok: true, clicked });
+        return true;
+      }
+      if (message?.type === "gemini.chat.prepare") {
+        prepareTabForNextChat()
+          .then((result) => sendResponse(result))
+          .catch((error: unknown) =>
+            sendResponse({
+              ok: false,
+              composerCleared: false,
+              newChatOpened: false,
+              error: error instanceof Error ? error.message : "Prepare failed"
+            })
+          );
         return true;
       }
       if (message?.type === "gemini.command.execute") {

@@ -302,24 +302,26 @@ const backend = new BackendWsClient();
 const MANAGED_GROUP_TITLE = "Extract Token";
 
 /**
- * Close the Gemini tab mapped to this account and forget the mapping.
- * Called after every successful chat to keep each run on a fresh page —
- * avoids the "send not confirmed" / stale composer / accumulated DOM bugs
- * that show up after several chats on the same tab.
+ * Reset the mapped Gemini tab for the next prompt without closing it.
+ * Content script clicks "Cuộc trò chuyện mới" (SPA) instead of reloading the page.
  */
-async function closeAccountTab(accountId: string): Promise<void> {
+async function prepareAccountTabForNextChat(accountId: string): Promise<void> {
   const tabs = await getTabs();
   const mapped = tabs.find((item) => item.accountId === accountId);
   if (!mapped) return;
+
   try {
-    await chrome.tabs.remove(mapped.tabId);
+    await sendMessageToGeminiTab(mapped.tabId, { type: "gemini.chat.prepare" });
+    const updated = await chrome.tabs.get(mapped.tabId);
+    await setAccountTab({
+      accountId,
+      tabId: mapped.tabId,
+      windowId: updated.windowId ?? mapped.windowId,
+      url: updated.url || mapped.url,
+      updatedAt: new Date().toISOString()
+    });
   } catch {
-    // tab may already be gone — ignore
-  }
-  try {
-    await removeAccountTab(accountId);
-  } catch {
-    // best effort
+    await removeAccountTab(accountId).catch(() => {});
   }
 }
 
@@ -692,7 +694,7 @@ async function sendPromptStream(payload: {
       content: responseText
     });
     await recordChatUsage(payload.prompt, responseText);
-    closeAccountTab(payload.accountId).catch(() => {});
+    prepareAccountTabForNextChat(payload.accountId).catch(() => {});
     return { accountId: payload.accountId, model: payload.model, responseText };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -743,9 +745,7 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
       content: responseText
     });
     await recordChatUsage(payload.prompt, responseText);
-    // Close the tab after every successful chat so the next prompt starts on
-    // a clean page. Fire-and-forget — the caller already has the response.
-    closeAccountTab(payload.accountId).catch(() => {});
+    prepareAccountTabForNextChat(payload.accountId).catch(() => {});
     return { accountId: payload.accountId, model: payload.model, responseText };
   } finally {
     await backend.request("busy.set", { account_id: payload.accountId, busy: false });
