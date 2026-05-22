@@ -37,12 +37,27 @@ pub struct BusyState {
     pub accounts: std::collections::HashMap<String, bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageStats {
+    /// Rows currently in `history_messages` (max 50).
+    pub history_stored_count: usize,
+    /// Lifetime user+assistant rows appended (not reduced when trimming).
+    pub history_saved_total: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardSummary {
     pub account_count: usize,
     pub enabled_account_count: usize,
     pub busy_count: usize,
     pub history_count: usize,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub history_saved_total: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

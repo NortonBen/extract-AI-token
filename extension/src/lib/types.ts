@@ -34,12 +34,24 @@ export interface BusyState {
   accounts: Record<string, boolean>;
 }
 
+export interface UsageStats {
+  historyStoredCount: number;
+  historySavedTotal: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface DashboardSummary {
   accountCount: number;
   enabledAccountCount: number;
   openGeminiTabCount: number;
   historyCount: number;
   busyCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  historySavedTotal: number;
 }
 
 export interface ExtensionState {

@@ -133,12 +133,15 @@ export function getStreamDebugLog(): StreamDebugEntry[] {
 
 function persistDebugFlag(enabled: boolean): void {
   try {
-    if (typeof chrome !== "undefined" && chrome.storage?.local) {
-      if (enabled) {
-        void chrome.storage.local.set({ [STREAM_DEBUG_STORAGE_KEY]: "1" });
-      } else {
-        void chrome.storage.local.remove(STREAM_DEBUG_STORAGE_KEY);
-      }
+    if (typeof chrome === "undefined" || !chrome.storage?.local) return;
+    if (enabled) {
+      chrome.storage.local.set({ [STREAM_DEBUG_STORAGE_KEY]: "1" }, () => {
+        void chrome.runtime.lastError;
+      });
+    } else {
+      chrome.storage.local.remove(STREAM_DEBUG_STORAGE_KEY, () => {
+        void chrome.runtime.lastError;
+      });
     }
   } catch {
     // ignore

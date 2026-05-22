@@ -4,6 +4,15 @@
 
 **Extract Token** helps you work with multiple Gemini accounts in Chrome from one place: manage accounts, open the right tab per account, send prompts, and keep chat history—while a small **desktop app** runs the local data service on your machine.
 
+## Message & API capabilities
+
+| Capability | Status | Notes |
+|------------|:------:|-------|
+| **Text** prompts (side panel, API) | ✅ | Plain text in the Chat tab and `messages[].content` as a string (or multipart with `type: "text"` only) |
+| **Tools** / function calling | ✅ | OpenAI-compatible `tools`, `tool_calls`, and multi-turn `tool` messages — see [Example 5](#example-5--chat-from-your-own-script-openai-compatible) |
+| **Files** (attachments, uploads) | ❌ | Not supported yet |
+| **Images** (vision / multimodal) | ❌ | Not supported yet — `image_url` and other non-text parts in `content` are ignored |
+
 ## Platform support
 
 ### Operating systems
@@ -47,6 +56,7 @@ On **Linux**, **Copy API URL** from the tray may need `wl-copy`, `xclip`, or `xs
 
 ### Not supported
 
+- **File** and **image** inputs in chat or API (text and tools only for now)
 - Mobile (iOS / Android)
 - Firefox / Safari extension install
 - Using the extension without a **local** backend on the same machine (default setup)
@@ -308,7 +318,7 @@ Each account is tied to a Gemini URL (for example `https://gemini.google.com/u/0
 
 ### Chat
 
-Send a test prompt through the extension (uses the selected account’s Gemini tab):
+Send a **text-only** test prompt through the extension (uses the selected account’s Gemini tab). File and image uploads are not supported yet.
 
 1. Choose an **account** in the dropdown.
 2. Type your message in the text box.
@@ -416,7 +426,10 @@ node chat-stream.mjs "haiku about coffee"
 npm install
 node openai-sdk.mjs "say hi"
 STREAM=1 node openai-sdk.mjs "stream me a fact"
+node tools.mjs
 ```
+
+The API supports **text** and **tools** / **tool_calls** (OpenAI-style function calling): send a `tools[]` array in the body; when the model returns tool JSON, the response uses `finish_reason: "tool_calls"`. **Files** and **images** are not supported yet.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

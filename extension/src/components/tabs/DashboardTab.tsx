@@ -24,11 +24,13 @@ export default function DashboardTab(props: Props) {
   const accountCount = state.accounts.length || dashboard.accountCount;
   const enabledCount =
     state.accounts.filter((a) => a.enabled).length || dashboard.enabledAccountCount;
-  const lockedCount = Math.max(accountCount - enabledCount, 0);
   const openTabCount = state.tabs.length || dashboard.openGeminiTabCount;
   const busyCount =
     Object.values(state.busy.accounts || {}).filter(Boolean).length || dashboard.busyCount;
-  const historyCount = state.history.length || dashboard.historyCount;
+  const promptTokens = dashboard.promptTokens ?? 0;
+  const completionTokens = dashboard.completionTokens ?? 0;
+  const totalTokens = dashboard.totalTokens ?? promptTokens + completionTokens;
+  const historySavedTotal = dashboard.historySavedTotal ?? 0;
   const tabsByAccount = new Map(state.tabs.map((t) => [t.accountId, t]));
 
   return (
@@ -51,15 +53,6 @@ export default function DashboardTab(props: Props) {
         </Col>
         <Col xs={12} sm={8}>
           <Card size="small" styles={{ body: { padding: 10 } }}>
-            <Statistic
-              title="Locked"
-              value={lockedCount}
-              prefix={<LockOutlined style={{ color: "#ef4444" }} />}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} sm={8}>
-          <Card size="small" styles={{ body: { padding: 10 } }}>
             <Statistic title="Open tabs" value={openTabCount} />
           </Card>
         </Col>
@@ -75,7 +68,22 @@ export default function DashboardTab(props: Props) {
         </Col>
         <Col xs={12} sm={8}>
           <Card size="small" styles={{ body: { padding: 10 } }}>
-            <Statistic title="History" value={historyCount} />
+            <Statistic title="Token input" value={promptTokens} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={8}>
+          <Card size="small" styles={{ body: { padding: 10 } }}>
+            <Statistic title="Token output" value={completionTokens} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={8}>
+          <Card size="small" styles={{ body: { padding: 10 } }}>
+            <Statistic title="Token tổng" value={totalTokens} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={8}>
+          <Card size="small" styles={{ body: { padding: 10 } }}>
+            <Statistic title="History đã ghi" value={historySavedTotal} />
           </Card>
         </Col>
       </Row>

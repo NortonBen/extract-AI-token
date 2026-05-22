@@ -1,4 +1,4 @@
-use crate::models::{BusyState, Provider};
+use crate::models::{BusyState, Provider, UsageStats};
 use crate::stream_bridge::{StreamBridge, StreamEvent};
 use crate::tab_debug::{TabDebugEntry, TabDebugLog};
 use anyhow::Context;
@@ -9,6 +9,22 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio::time::{Duration, timeout};
+
+/// Maximum history rows kept in SQLite (newest by `created_at`).
+pub const HISTORY_MAX_MESSAGES: i64 = 50;
+
+fn trim_history_conn(conn: &Connection, keep: i64) -> anyhow::Result<()> {
+    if keep <= 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM history_messages WHERE id NOT IN (
+            SELECT id FROM history_messages ORDER BY created_at DESC LIMIT ?1
+        )",
+        params![keep],
+    )?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct WsRpcResponse {
@@ -102,12 +118,20 @@ impl AppState {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS usage_counters (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                history_saved_total INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO usage_counters (id) VALUES (1);
             "#,
         )?;
         let _ = conn.execute(
             "ALTER TABLE accounts ADD COLUMN page_root TEXT NOT NULL DEFAULT ''",
             [],
         );
+        trim_history_conn(&conn, HISTORY_MAX_MESSAGES)?;
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             busy: Arc::new(Mutex::new(BusyState::default())),
@@ -283,7 +307,75 @@ impl AppState {
                 row.created_at.to_rfc3339()
             ],
         )?;
+        trim_history_conn(&conn, HISTORY_MAX_MESSAGES)?;
+        Self::increment_history_saved_total(&conn, 1)?;
         Ok(())
+    }
+
+    fn usage_row(conn: &Connection) -> anyhow::Result<(i64, i64, i64)> {
+        conn.query_row(
+            "SELECT prompt_tokens, completion_tokens, history_saved_total FROM usage_counters WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .or_else(|_| Ok((0, 0, 0)))
+    }
+
+    fn increment_history_saved_total(conn: &Connection, delta: i64) -> anyhow::Result<()> {
+        conn.execute(
+            "UPDATE usage_counters SET history_saved_total = history_saved_total + ?1 WHERE id = 1",
+            params![delta],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_usage_stats(&self) -> anyhow::Result<UsageStats> {
+        let conn = self.db.lock().expect("db mutex poisoned");
+        let stored = Self::history_count_inner(&conn)? as usize;
+        let (prompt_tokens, completion_tokens, history_saved_total) = Self::usage_row(&conn)?;
+        Ok(UsageStats {
+            history_stored_count: stored,
+            history_saved_total,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        })
+    }
+
+    pub fn add_token_usage(&self, prompt_tokens: i64, completion_tokens: i64) -> anyhow::Result<()> {
+        if prompt_tokens <= 0 && completion_tokens <= 0 {
+            return Ok(());
+        }
+        let conn = self.db.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE usage_counters SET
+                prompt_tokens = prompt_tokens + ?1,
+                completion_tokens = completion_tokens + ?2
+             WHERE id = 1",
+            params![prompt_tokens.max(0), completion_tokens.max(0)],
+        )?;
+        Ok(())
+    }
+
+    pub fn reset_token_usage(&self) -> anyhow::Result<()> {
+        let conn = self.db.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE usage_counters SET prompt_tokens = 0, completion_tokens = 0 WHERE id = 1",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn history_count_inner(conn: &Connection) -> anyhow::Result<usize> {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM history_messages", [], |row| {
+            row.get(0)
+        })?;
+        Ok(count as usize)
+    }
+
+    pub fn trim_history(&self, keep: i64) -> anyhow::Result<()> {
+        let conn = self.db.lock().expect("db mutex poisoned");
+        trim_history_conn(&conn, keep)
     }
 
     pub fn list_history(&self, limit: i64) -> anyhow::Result<Vec<HistoryRow>> {
@@ -318,10 +410,7 @@ impl AppState {
 
     pub fn history_count(&self) -> anyhow::Result<usize> {
         let conn = self.db.lock().expect("db mutex poisoned");
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM history_messages", [], |row| {
-            row.get(0)
-        })?;
-        Ok(count as usize)
+        Self::history_count_inner(&conn)
     }
 
     pub fn upsert_model(&self, row: &ModelRow) -> anyhow::Result<()> {

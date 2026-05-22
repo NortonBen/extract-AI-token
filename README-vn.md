@@ -4,6 +4,15 @@
 
 **Extract Token** giúp bạn làm việc với nhiều tài khoản Gemini trên Chrome từ một chỗ: quản lý account, mở đúng tab cho từng account, gửi prompt và lưu lịch sử chat — kèm **ứng dụng desktop** chạy dịch vụ dữ liệu cục bộ trên máy bạn.
 
+## Khả năng tin nhắn & API
+
+| Khả năng | Trạng thái | Ghi chú |
+|----------|:----------:|---------|
+| Prompt **text** (side panel, API) | ✅ | Ô chat chỉ nhập chữ; API dùng `messages[].content` dạng chuỗi hoặc multipart chỉ có `type: "text"` |
+| **Tools** / function calling | ✅ | Tương thích OpenAI: `tools`, `tool_calls`, vòng lặp `tool` nhiều lượt — xem [Ví dụ 5](#ví-dụ-5--chat-từ-script-tương-thích-openai) |
+| **File** (đính kèm, upload) | ❌ | Chưa hỗ trợ |
+| **Ảnh** (vision / đa phương thức) | ❌ | Chưa hỗ trợ — phần `image_url` và các phần không phải text trong `content` bị bỏ qua |
+
 ## Hỗ trợ nền tảng
 
 ### Hệ điều hành
@@ -47,6 +56,7 @@ Trên **Linux**, **Copy API URL** từ tray có thể cần cài `wl-copy`, `xcl
 
 ### Chưa hỗ trợ
 
+- **File** và **ảnh** trong chat hoặc API (hiện chỉ text và tools)
 - Di động (iOS / Android)
 - Cài extension trên Firefox / Safari
 - Chỉ dùng extension mà **không** có backend cục bộ trên cùng máy (cấu hình mặc định)
@@ -308,7 +318,7 @@ Mỗi account gắn một URL Gemini (ví dụ `https://gemini.google.com/u/0/ap
 
 ### Chat
 
-Gửi prompt thử qua extension (dùng tab Gemini của account đã chọn):
+Gửi prompt **chỉ text** thử qua extension (dùng tab Gemini của account đã chọn). Chưa hỗ trợ đính kèm file hoặc ảnh.
 
 1. Chọn **account** trong dropdown.
 2. Nhập nội dung vào ô text.
@@ -321,7 +331,7 @@ Account phải **mở khóa** và tab tương ứng nên mở sẵn (dùng **Ope
 
 ### History
 
-Hiển thị các tin user/assistant gần đây đã lưu khi backend kết nối.
+Hiển thị các tin user/assistant gần đây đã lưu khi backend kết nối (tối đa **50** tin mới nhất; tin cũ hơn tự xóa).
 
 - **Clear History** — xóa toàn bộ history (không hoàn tác từ panel).
 
@@ -419,7 +429,7 @@ STREAM=1 node openai-sdk.mjs "stream 1 fact"
 node tools.mjs
 ```
 
-API hỗ trợ `tools` / `tool_calls` (function calling kiểu OpenAI): gửi `tools[]` trong body, nhận `finish_reason: "tool_calls"` khi model trả JSON gọi tool.
+API hỗ trợ **text** và **tools** / **tool_calls** (function calling kiểu OpenAI): gửi `tools[]` trong body, nhận `finish_reason: "tool_calls"` khi model trả JSON gọi tool. **File** và **ảnh** chưa hỗ trợ.
 
 | Biến | Mặc định | Ý nghĩa |
 |------|----------|---------|

@@ -8,7 +8,8 @@ import type {
   ExtensionState,
   GeminiExecutorCommand,
   GeminiExecutorResult,
-  SendPromptRequest
+  SendPromptRequest,
+  UsageStats
 } from "./types";
 
 export type ExtensionMessage =
@@ -23,6 +24,8 @@ export type ExtensionMessage =
   | { type: "chat.stop"; payload: { accountId: string } }
   | { type: "account.set-enabled"; payload: { accountId: string; enabled: boolean } }
   | { type: "history.clear" }
+  | { type: "usage.get" }
+  | { type: "usage.reset" }
   | { type: "dashboard.get" }
   | { type: "backend.status.get" }
   | { type: "backend.config.set"; payload: BackendConnectionConfig }
@@ -31,6 +34,7 @@ export type ExtensionMessage =
 export type ExtensionMessageResponse =
   | { ok: true; state: ExtensionState }
   | { ok: true; dashboard: DashboardSummary }
+  | { ok: true; usage: UsageStats }
   | { ok: true; tabId: number }
   | {
       ok: true;

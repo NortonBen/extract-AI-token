@@ -4,6 +4,7 @@ mod sanitize;
 mod state;
 mod stream_bridge;
 mod tab_debug;
+mod tokens;
 mod tools;
 
 use std::env;

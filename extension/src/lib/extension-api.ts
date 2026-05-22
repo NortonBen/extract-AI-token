@@ -5,6 +5,7 @@ import type {
   ChatResult,
   DashboardSummary,
   ExtensionState,
+  UsageStats,
   GeminiExecutorCommand,
   GeminiExecutorResult,
   GeminiAccountPreview
@@ -80,6 +81,17 @@ export async function sendPrompt(payload: {
 
 export async function clearHistory(): Promise<void> {
   const res = await send({ type: "history.clear" });
+  if (!res.ok) throw new Error(res.error);
+}
+
+export async function getUsageStats(): Promise<UsageStats> {
+  const res = await send({ type: "usage.get" });
+  if (!res.ok || !("usage" in res)) throw new Error((res as any).error || "usage.get failed");
+  return res.usage;
+}
+
+export async function resetTokenUsage(): Promise<void> {
+  const res = await send({ type: "usage.reset" });
   if (!res.ok) throw new Error(res.error);
 }
 

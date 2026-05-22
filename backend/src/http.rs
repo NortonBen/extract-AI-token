@@ -15,12 +15,13 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::models::{
     Account, AppendHistoryRequest, BusyState, DashboardSummary, HistoryMessage, ModelConfig,
-    SetBusyRequest, UpsertAccountRequest, UpsertModelRequest,
+    SetBusyRequest, UpsertAccountRequest, UpsertModelRequest, UsageStats,
 };
 use crate::state::{AccountRow, AppState, HistoryRow, ModelRow, WsRpcResponse};
 use crate::stream_bridge::StreamEvent;
 use crate::tab_debug::entry_from_ws_value;
 use crate::sanitize::{apply_output_format, resolve_output_format, OutputFormat};
+use crate::tokens::{estimate_output_tokens, estimate_prompt_tokens};
 use crate::tools::{
     build_prompt, looks_like_tool_calls_json, openai_tool_message, resolve_tool_calls_relaxed,
     ChatMessage, ToolDefinition,
@@ -71,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/busy", get(get_busy).post(set_busy))
         .route("/v1/dashboard", get(get_dashboard))
+        .route("/v1/usage", get(get_usage).post(reset_usage))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/debug/tab", get(list_tab_debug))
         .with_state(state)
@@ -262,7 +264,7 @@ fn dispatch_ws_request(state: &AppState, req: WsRequest) -> WsResponse {
                 .map(account_from_row)
                 .collect();
             let history: Vec<HistoryMessage> = state
-                .list_history(200)?
+                .list_history(crate::state::HISTORY_MAX_MESSAGES)?
                 .into_iter()
                 .map(history_from_row)
                 .collect();
@@ -273,16 +275,23 @@ fn dispatch_ws_request(state: &AppState, req: WsRequest) -> WsResponse {
                 "busy": busy
             }))
         }
-        "dashboard.get" => {
-            let accounts = state.list_accounts()?;
-            let busy = state.busy.lock().expect("busy mutex poisoned").clone();
-            let dashboard = DashboardSummary {
-                account_count: accounts.len(),
-                enabled_account_count: accounts.iter().filter(|x| x.enabled).count(),
-                busy_count: busy.accounts.values().filter(|value| **value).count(),
-                history_count: state.history_count()?,
-            };
-            Ok(serde_json::to_value(dashboard)?)
+        "dashboard.get" => Ok(serde_json::to_value(build_dashboard_summary(&state)?)?),
+        "usage.get" => Ok(serde_json::to_value(state.get_usage_stats()?)?),
+        "usage.reset" => {
+            state.reset_token_usage()?;
+            Ok(serde_json::json!({ "reset": true }))
+        }
+        "usage.record" => {
+            #[derive(Deserialize)]
+            struct RecordUsage {
+                prompt: String,
+                output: String,
+            }
+            let payload: RecordUsage = serde_json::from_value(req.payload)?;
+            let prompt_tokens = estimate_prompt_tokens(&payload.prompt, &[]);
+            let completion_tokens = estimate_output_tokens(&payload.output, &[]);
+            state.add_token_usage(prompt_tokens, completion_tokens)?;
+            Ok(serde_json::to_value(state.get_usage_stats()?)?)
         }
         "models.get" => {
             let models: Vec<ModelConfig> = state
@@ -573,7 +582,10 @@ async fn list_history(
     State(state): State<AppState>,
     Query(query): Query<HistoryQuery>,
 ) -> impl IntoResponse {
-    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+    let limit = query
+        .limit
+        .unwrap_or(crate::state::HISTORY_MAX_MESSAGES)
+        .clamp(1, crate::state::HISTORY_MAX_MESSAGES);
     match state.list_history(limit) {
         Ok(rows) => {
             let out: Vec<HistoryMessage> = rows.into_iter().map(history_from_row).collect();
@@ -617,39 +629,59 @@ async fn get_busy(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, Json(busy)).into_response()
 }
 
-async fn get_dashboard(State(state): State<AppState>) -> impl IntoResponse {
-    let accounts = match state.list_accounts() {
-        Ok(rows) => rows,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-    let history_count = match state.history_count() {
-        Ok(count) => count,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+fn build_dashboard_summary(state: &AppState) -> anyhow::Result<DashboardSummary> {
+    let usage = state.get_usage_stats()?;
+    let accounts = state.list_accounts()?;
     let busy = state.busy.lock().expect("busy mutex poisoned").clone();
-    let summary = DashboardSummary {
+    Ok(DashboardSummary {
         account_count: accounts.len(),
         enabled_account_count: accounts.iter().filter(|x| x.enabled).count(),
         busy_count: busy.accounts.values().filter(|value| **value).count(),
-        history_count,
-    };
-    (StatusCode::OK, Json(summary)).into_response()
+        history_count: usage.history_stored_count,
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        history_saved_total: usage.history_saved_total,
+    })
+}
+
+async fn get_dashboard(State(state): State<AppState>) -> impl IntoResponse {
+    match build_dashboard_summary(&state) {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_usage(State(state): State<AppState>) -> impl IntoResponse {
+    match state.get_usage_stats() {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn reset_usage(State(state): State<AppState>) -> impl IntoResponse {
+    match state.reset_token_usage() {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "reset": true }))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -740,6 +772,7 @@ async fn openai_chat_completions(
             model,
             stream_id,
             rx,
+            prompt.clone(),
             payload.tools,
             output_format,
         )
@@ -813,12 +846,16 @@ async fn openai_chat_completions(
             .into_response();
     }
 
+    let prompt_tokens = estimate_prompt_tokens(&prompt, &payload.tools);
+    let completion_tokens = estimate_output_tokens(&raw_response, &tool_calls);
+    let _ = state.add_token_usage(prompt_tokens, completion_tokens);
+
     let id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
     let created = Utc::now().timestamp();
     let usage = serde_json::json!({
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens
     });
 
     let choice = if !tool_calls.is_empty() {
@@ -852,6 +889,7 @@ fn sse_gemini_live(
     model: String,
     stream_id: String,
     mut rx: mpsc::UnboundedReceiver<StreamEvent>,
+    prompt: String,
     tools: Vec<ToolDefinition>,
     output_format: OutputFormat,
 ) -> impl IntoResponse {
@@ -874,10 +912,13 @@ fn sse_gemini_live(
 
     let model_task = model.clone();
     let id_task = stream_id.clone();
+    let prompt_task = prompt;
+    let tools_task = tools;
+    let state_task = state.clone();
     tokio::spawn(async move {
         let mut full_text = String::new();
         let mut stream_error: Option<String> = None;
-        /// True only when a content or tool_calls chunk was sent to the client.
+        // True only when a content or tool_calls chunk was sent to the client.
         let mut sent_sse = false;
 
         while let Some(evt) = rx.recv().await {
@@ -952,7 +993,7 @@ fn sse_gemini_live(
         }
 
         let raw = full_text.clone();
-        let tool_calls = resolve_tool_calls_relaxed(&raw, &tools);
+        let tool_calls = resolve_tool_calls_relaxed(&raw, &tools_task);
         let looks_like_tools = looks_like_tool_calls_json(&raw);
         if has_tools && tool_calls.is_empty() && looks_like_tools {
             tracing::warn!(
@@ -1062,7 +1103,11 @@ fn sse_gemini_live(
             sent_sse = true;
         }
 
-        state.close_gemini_stream(&id_task);
+        let prompt_tokens = estimate_prompt_tokens(&prompt_task, &tools_task);
+        let completion_tokens = estimate_output_tokens(&raw, &tool_calls);
+        let _ = state_task.add_token_usage(prompt_tokens, completion_tokens);
+
+        state_task.close_gemini_stream(&id_task);
 
         let final_event = serde_json::json!({
             "id": id_task,

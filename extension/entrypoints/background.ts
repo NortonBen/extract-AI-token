@@ -12,7 +12,51 @@ import {
   type StreamDebugEntry
 } from "../src/lib/gemini-stream-debug";
 import { ensureGeminiTabScripts } from "../src/lib/gemini-tab-scripts";
-import type { Account, BackendConnectionConfig, BackendConnectionStatus, BusyState, DashboardSummary, ExtensionState, HistoryMessage } from "../src/lib/types";
+import type {
+  Account,
+  BackendConnectionConfig,
+  BackendConnectionStatus,
+  BusyState,
+  DashboardSummary,
+  ExtensionState,
+  HistoryMessage,
+  UsageStats
+} from "../src/lib/types";
+
+async function recordChatUsage(prompt: string, output: string): Promise<void> {
+  try {
+    await backend.request("usage.record", {
+      prompt: prompt || "",
+      output: output || ""
+    });
+  } catch {
+    // backend may be offline
+  }
+}
+
+function mapUsageStats(raw: Record<string, unknown>): UsageStats {
+  return {
+    historyStoredCount: Number(raw.history_stored_count ?? 0),
+    historySavedTotal: Number(raw.history_saved_total ?? 0),
+    promptTokens: Number(raw.prompt_tokens ?? 0),
+    completionTokens: Number(raw.completion_tokens ?? 0),
+    totalTokens: Number(raw.total_tokens ?? 0)
+  };
+}
+
+function mapDashboard(raw: Record<string, unknown>): DashboardSummary {
+  return {
+    accountCount: Number(raw.account_count ?? 0),
+    enabledAccountCount: Number(raw.enabled_account_count ?? 0),
+    openGeminiTabCount: 0,
+    historyCount: Number(raw.history_count ?? 0),
+    busyCount: Number(raw.busy_count ?? 0),
+    promptTokens: Number(raw.prompt_tokens ?? 0),
+    completionTokens: Number(raw.completion_tokens ?? 0),
+    totalTokens: Number(raw.total_tokens ?? 0),
+    historySavedTotal: Number(raw.history_saved_total ?? 0)
+  };
+}
 
 type WsPayload = Record<string, unknown>;
 
@@ -647,6 +691,7 @@ async function sendPromptStream(payload: {
       role: "assistant",
       content: responseText
     });
+    await recordChatUsage(payload.prompt, responseText);
     closeAccountTab(payload.accountId).catch(() => {});
     return { accountId: payload.accountId, model: payload.model, responseText };
   } catch (err) {
@@ -697,6 +742,7 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
       role: "assistant",
       content: responseText
     });
+    await recordChatUsage(payload.prompt, responseText);
     // Close the tab after every successful chat so the next prompt starts on
     // a clean page. Fire-and-forget — the caller already has the response.
     closeAccountTab(payload.accountId).catch(() => {});
@@ -845,30 +891,26 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
     case "state.get":
       return { ok: true, state: await composeState() };
     case "dashboard.get": {
-      let dashboard: DashboardSummary = {
-        accountCount: 0,
-        enabledAccountCount: 0,
-        openGeminiTabCount: 0,
-        historyCount: 0,
-        busyCount: 0
-      };
+      let dashboard: DashboardSummary = mapDashboard({});
       try {
-        dashboard = await backend.request<DashboardSummary>("dashboard.get");
+        const raw = await backend.request<Record<string, unknown>>("dashboard.get");
+        dashboard = mapDashboard(raw);
       } catch {
         // keep default dashboard when backend is unavailable
       }
       const tabs = await getTabs();
       return {
         ok: true,
-        dashboard: {
-          accountCount: dashboard.accountCount ?? 0,
-          enabledAccountCount: dashboard.enabledAccountCount ?? 0,
-          openGeminiTabCount: tabs.length,
-          historyCount: dashboard.historyCount ?? 0,
-          busyCount: dashboard.busyCount ?? 0
-        }
+        dashboard: { ...dashboard, openGeminiTabCount: tabs.length }
       };
     }
+    case "usage.get": {
+      const raw = await backend.request<Record<string, unknown>>("usage.get");
+      return { ok: true, usage: mapUsageStats(raw) };
+    }
+    case "usage.reset":
+      await backend.request("usage.reset");
+      return { ok: true };
     case "backend.status.get":
       return { ok: true, backend: backend.getStatus() };
     case "backend.config.set": {
@@ -943,15 +985,27 @@ const backgroundDebugBuffer: StreamDebugEntry[] = [];
 const BACKGROUND_DEBUG_MAX = 400;
 
 function refreshStreamDebugFlag(): void {
-  chrome.storage.local.get(STREAM_DEBUG_STORAGE_KEY, (stored) => {
-    const on = stored[STREAM_DEBUG_STORAGE_KEY] === "1";
-    setStreamDebugOverride(on);
-    if (on) {
-      console.info(
-        "[ExtractToken:background] stream debug ON — log intercept/content sẽ hiện ở console Extension này"
-      );
+  try {
+    if (!chrome.storage?.local) {
+      setStreamDebugOverride(false);
+      return;
     }
-  });
+    chrome.storage.local.get(STREAM_DEBUG_STORAGE_KEY, (stored) => {
+      if (chrome.runtime.lastError) {
+        setStreamDebugOverride(false);
+        return;
+      }
+      const on = stored?.[STREAM_DEBUG_STORAGE_KEY] === "1";
+      setStreamDebugOverride(on);
+      if (on) {
+        console.info(
+          "[ExtractToken:background] stream debug ON — log intercept/content sẽ hiện ở console Extension này"
+        );
+      }
+    });
+  } catch {
+    setStreamDebugOverride(false);
+  }
 }
 
 async function resolveAccountIdForTab(tabId?: number): Promise<string | undefined> {

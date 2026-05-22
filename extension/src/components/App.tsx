@@ -10,10 +10,13 @@ import {
   Input,
   Modal,
   Space,
+  Statistic,
   Tag,
   Tabs,
   Tooltip,
-  Typography
+  Typography,
+  Popconfirm,
+  Divider
 } from "antd";
 import { ReloadOutlined, SettingOutlined, CheckCircleFilled, DisconnectOutlined } from "@ant-design/icons";
 import {
@@ -24,20 +27,29 @@ import {
   getBackendStatus,
   getDashboard,
   getState,
+  getUsageStats,
   reconnectBackend,
+  resetTokenUsage,
   setAccountEnabled,
   setBackendConfig,
   sendPrompt,
   stopPrompt,
   upsertAccount
 } from "../lib/extension-api";
-import { createAccountId } from "../lib/storage";
-import type { BackendConnectionStatus, DashboardSummary, ExtensionState, GeminiAccountPreview } from "../lib/types";
+import { createAccountId, getBackendConfig, getTabs } from "../lib/storage";
+import type {
+  BackendConnectionStatus,
+  DashboardSummary,
+  ExtensionState,
+  GeminiAccountPreview,
+  UsageStats
+} from "../lib/types";
+
+import DashboardTab from "./tabs/DashboardTab";
 
 const AccountsTab = lazy(() => import("./tabs/AccountsTab"));
 const ChatTab = lazy(() => import("./tabs/ChatTab"));
 const HistoryTab = lazy(() => import("./tabs/HistoryTab"));
-const DashboardTab = lazy(() => import("./tabs/DashboardTab"));
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -46,7 +58,19 @@ const emptyDashboard: DashboardSummary = {
   enabledAccountCount: 0,
   openGeminiTabCount: 0,
   historyCount: 0,
-  busyCount: 0
+  busyCount: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  historySavedTotal: 0
+};
+
+const emptyUsage: UsageStats = {
+  historyStoredCount: 0,
+  historySavedTotal: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0
 };
 
 function makeFallbackState(host: string, port: string): ExtensionState {
@@ -59,7 +83,7 @@ function makeFallbackState(host: string, port: string): ExtensionState {
       host,
       port: Number(port) || 9516,
       connected: false,
-      lastError: "Backend unavailable"
+      lastError: null
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -76,6 +100,7 @@ export function App() {
   const [resultText, setResultText] = useState("");
   const [backendStatus, setBackendStatus] = useState<BackendConnectionStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageStats, setUsageStats] = useState<UsageStats>(emptyUsage);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [backendHost, setBackendHost] = useState("127.0.0.1");
   const [backendPort, setBackendPort] = useState("9516");
@@ -94,7 +119,23 @@ export function App() {
     [accounts, activeAccountId]
   );
 
-  async function reload() {
+  async function hydrateLocal() {
+    const [config, tabs] = await Promise.all([getBackendConfig(), getTabs()]);
+    setBackendHost(config.host);
+    setBackendPort(String(config.port));
+    settingsForm.setFieldsValue({ host: config.host, port: String(config.port) });
+    setState((prev) => ({
+      ...prev,
+      tabs,
+      backend: {
+        ...prev.backend,
+        host: config.host,
+        port: config.port
+      }
+    }));
+  }
+
+  async function refreshFromBackend() {
     const [stateRes, dashboardRes, backendRes] = await Promise.allSettled([
       getState(),
       getDashboard(),
@@ -125,20 +166,17 @@ export function App() {
     }
 
     const firstAccount = nextState.accounts?.[0];
-    if (firstAccount && !activeAccountId) {
-      setActiveAccountId(firstAccount.id);
+    if (firstAccount) {
+      setActiveAccountId((current) => current || firstAccount.id);
     }
   }
 
   useEffect(() => {
     accountForm.setFieldsValue({ pageRoot: "", label: "Gemini User" });
-    reload().catch((err: unknown) => {
-      setError(err instanceof Error ? err.message : "Cannot load extension state");
-    });
+    void hydrateLocal();
+    void refreshFromBackend();
     const timer = window.setInterval(() => {
-      reload().catch(() => {
-        // silent refresh failure — keep last good state
-      });
+      void refreshFromBackend();
     }, 3000);
     return () => {
       window.clearInterval(timer);
@@ -170,7 +208,7 @@ export function App() {
     setAddAccountError(null);
     accountForm.resetFields();
     accountForm.setFieldsValue({ pageRoot: "", label: "Gemini User" });
-    await reload();
+    await refreshFromBackend();
   }
 
   async function onDetectPageRoot() {
@@ -189,12 +227,12 @@ export function App() {
 
   async function onDeleteAccount(accountId: string) {
     await deleteAccount(accountId);
-    await reload();
+    await refreshFromBackend();
   }
 
   async function onOpenTab(accountId: string) {
     await ensureTab(accountId);
-    await reload();
+    await refreshFromBackend();
   }
 
   async function onSendPrompt() {
@@ -212,7 +250,7 @@ export function App() {
         stream: streamEnabled
       });
       setResultText(res.responseText);
-      await reload();
+      await refreshFromBackend();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send prompt failed");
     } finally {
@@ -232,7 +270,7 @@ export function App() {
   async function onToggleLock(accountId: string, enabled: boolean) {
     try {
       await setAccountEnabled(accountId, enabled);
-      await reload();
+      await refreshFromBackend();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Toggle lock failed");
     }
@@ -240,7 +278,7 @@ export function App() {
 
   async function onClearHistory() {
     await clearHistory();
-    await reload();
+    await refreshFromBackend();
   }
 
   async function onSaveBackendSettings(values: { host: string; port: string }) {
@@ -253,12 +291,12 @@ export function App() {
     await setBackendConfig({ host: values.host.trim(), port: portNum });
     await reconnectBackend();
     setSettingsOpen(false);
-    await reload();
+    await refreshFromBackend();
   }
 
   async function onReconnectBackend() {
     await reconnectBackend();
-    await reload();
+    await refreshFromBackend();
   }
 
   const accountOptions = accounts.map((item) => ({ label: item.label, value: item.id }));
@@ -296,7 +334,12 @@ export function App() {
               <Button
                 shape="circle"
                 icon={<SettingOutlined />}
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => {
+                  setSettingsOpen(true);
+                  getUsageStats()
+                    .then(setUsageStats)
+                    .catch(() => setUsageStats(emptyUsage));
+                }}
                 aria-label="Settings"
                 size="small"
               />
@@ -330,11 +373,7 @@ export function App() {
             {
               key: "dashboard",
               label: "Dashboard",
-              children: (
-                <Suspense fallback={<CardSkeleton />}>
-                  <DashboardTab dashboard={dashboard} state={state} />
-                </Suspense>
-              )
+              children: <DashboardTab dashboard={dashboard} state={state} />
             },
             {
               key: "accounts",
@@ -408,6 +447,35 @@ export function App() {
             <Input placeholder="9516" />
           </Form.Item>
         </Form>
+        <Divider style={{ margin: "16px 0" }} />
+        <Title level={5} style={{ marginTop: 0 }}>
+          Thống kê (lưu riêng)
+        </Title>
+        <Space size={16} wrap>
+          <Statistic title="Token input" value={usageStats.promptTokens} />
+          <Statistic title="Token output" value={usageStats.completionTokens} />
+          <Statistic title="Token tổng" value={usageStats.totalTokens} />
+        </Space>
+        <Space size={16} wrap style={{ marginTop: 12 }}>
+          <Statistic title="History đang lưu" value={usageStats.historyStoredCount} suffix="/ 50" />
+          <Statistic title="History đã ghi" value={usageStats.historySavedTotal} />
+        </Space>
+        <Popconfirm
+          title="Reset thống kê token input/output?"
+          description="Không xóa history. Chỉ đặt lại bộ đếm token."
+          onConfirm={async () => {
+            await resetTokenUsage();
+            const next = await getUsageStats().catch(() => emptyUsage);
+            setUsageStats(next);
+            await refreshFromBackend();
+          }}
+          okText="Reset"
+          cancelText="Hủy"
+        >
+          <Button danger style={{ marginTop: 16 }}>
+            Reset token
+          </Button>
+        </Popconfirm>
       </Modal>
 
       <Modal
