@@ -72,7 +72,8 @@ On tagged releases (`v*.*.*`), pick the asset for your OS:
 | `extract-ai-token-backend-macos.zip` | CLI `extract-ai-token` (macOS, universal) |
 | `extract-ai-token-backend-windows.zip` | CLI `extract-ai-token.exe` |
 | `extract-ai-token-backend-linux.tar.gz` | CLI `extract-ai-token` |
-| `app-macos.zip` (or `*-macos.zip`) | macOS `.app` with backend bundled |
+| `extract-ai-token-v*-macos.dmg` | macOS installer (drag app to Applications) |
+| `extract-ai-token-v*-macos.zip` | macOS `.app` zip (alternative) |
 | `extract-ai-token-windows.zip` | Windows app folder + `backend.exe` |
 | `extract-ai-token-linux.tar.gz` | Linux `bundle/` + `backend` |
 
@@ -82,9 +83,22 @@ Extension zip is published separately (`extension-chrome`).
 
 **macOS**
 
-1. Unzip the app archive and open **`app.app`** (or the release `.app` name).
-2. The backend starts automatically; look for the **menu bar** icon.
-3. **Open Dashboard** from the tray to confirm **Running**.
+1. Download **`extract-ai-token-v*-macos.dmg`** from the release (signed + notarized when [release secrets](docs/MACOS_SIGNING.md) are configured).
+2. Open the DMG → drag **Extract AI Token** to **Applications**.
+3. Launch from Applications (or Spotlight). The backend starts automatically; look for the **menu bar** icon.
+4. **Open Dashboard** from the tray to confirm **Running**.
+
+Alternatively, use the `.zip` asset: unzip, then open **Extract AI Token.app**.
+
+If macOS says *“Apple could not verify…”* (unsigned local/dev build):
+
+- **Right-click** the app → **Open** → **Open** once, or run:
+
+  ```bash
+  xattr -cr "/Applications/Extract AI Token.app"
+  ```
+
+Maintainers: see [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) to enable **Developer ID signing + notarization** on release tags.
 
 **Windows**
 
@@ -444,6 +458,7 @@ Prerequisites for API examples: desktop app **Running**, at least one **enabled*
 | Tray missing on Linux | Check your desktop environment’s system tray support; restart the app. |
 | Extension won’t load | Use a Chromium browser with MV3; enable side panel support (Chrome 114+). |
 | No history after chat | Backend must be **Connected** when sending; history is stored on the local service. |
+| macOS “could not verify” / malware warning | Use a **notarized** release DMG, or right-click → **Open** / `xattr -cr` (see [MACOS_SIGNING.md](docs/MACOS_SIGNING.md)). |
 
 ## Disclaimer
 

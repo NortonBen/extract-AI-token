@@ -205,17 +205,29 @@ jobs:
           cp build/macos-backend "$APP/Contents/Resources/backend"
           chmod +x "$APP/Contents/Resources/backend"
 
-      - name: Archive .app as zip
+      - name: Package macOS (sign if certificate, DMG + zip)
         run: |
-          APP=$(ls -dt app/build/macos/Build/Products/Release/*.app | head -1)
-          APP_NAME=$(basename "$APP" .app)
-          cd "$(dirname "$APP")"
-          zip -r --symlinks "$OLDPWD/${APP_NAME}-macos.zip" "$(basename "$APP")"
+          chmod +x scripts/*.sh
+          ./scripts/macos-release-package.sh
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          # Sign only when MACOS_CERTIFICATE_BASE64 is set; notarize when Apple secrets exist.
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-macos
-          path: "*-macos.zip"
+          path: |
+            extract-ai-token-*-macos.dmg
+            extract-ai-token-*-macos.zip
           if-no-files-found: error
 
   # ─────────────────────────────────────────────

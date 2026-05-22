@@ -72,7 +72,8 @@ Trên bản release có tag `v*.*.*`, chọn file đúng hệ điều hành:
 | `extract-ai-token-backend-macos.zip` | CLI `extract-ai-token` (macOS, universal) |
 | `extract-ai-token-backend-windows.zip` | CLI `extract-ai-token.exe` |
 | `extract-ai-token-backend-linux.tar.gz` | CLI `extract-ai-token` |
-| `app-macos.zip` (hoặc `*-macos.zip`) | `.app` macOS kèm backend |
+| `extract-ai-token-v*-macos.dmg` | Bộ cài macOS (kéo app vào Applications) |
+| `extract-ai-token-v*-macos.zip` | `.app` dạng zip (tùy chọn) |
 | `extract-ai-token-windows.zip` | Thư mục app Windows + `backend.exe` |
 | `extract-ai-token-linux.tar.gz` | Thư mục `bundle/` Linux + `backend` |
 
@@ -82,9 +83,22 @@ Gói extension Chrome đăng riêng (`extension-chrome`).
 
 **macOS**
 
-1. Giải nén và mở **`app.app`** (tên `.app` trên release).
-2. Backend tự chạy; tìm icon trên **menu bar**.
-3. Tray → **Open Dashboard** → trạng thái **Running**.
+1. Tải **`extract-ai-token-v*-macos.dmg`** từ release (đã ký + notarize nếu đã cấu hình [secret release](docs/MACOS_SIGNING.md)).
+2. Mở DMG → kéo **Extract AI Token** vào **Applications**.
+3. Mở app từ Applications (hoặc Spotlight). Backend tự chạy; tìm icon **menu bar**.
+4. Tray → **Open Dashboard** → trạng thái **Running**.
+
+Hoặc dùng file `.zip`: giải nén rồi mở **Extract AI Token.app**.
+
+Nếu macOS báo *“Apple could not verify…”* (bản build chưa ký):
+
+- **Chuột phải** vào app → **Open** → **Open** một lần, hoặc:
+
+  ```bash
+  xattr -cr "/Applications/Extract AI Token.app"
+  ```
+
+Người phát hành: xem [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) để bật **chữ ký Developer ID + notarize** khi push tag.
 
 **Windows**
 
@@ -444,6 +458,7 @@ print(reply.choices[0].message.content)
 | Không thấy tray trên Linux | Kiểm tra system tray của môi trường desktop; khởi động lại app. |
 | Extension không cài được | Dùng Chromium có MV3; cần hỗ trợ side panel (Chrome 114+). |
 | Không có history sau chat | Backend phải **Connected** khi gửi; history lưu trên dịch vụ cục bộ. |
+| macOS “could not verify” / cảnh báo malware | Dùng DMG release **đã notarize**, hoặc chuột phải → **Open** / `xattr -cr` (xem [MACOS_SIGNING.md](docs/MACOS_SIGNING.md)). |
 
 ## Tuyên bố miễn trừ trách nhiệm
 
