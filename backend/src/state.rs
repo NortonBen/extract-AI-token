@@ -165,7 +165,9 @@ impl AppState {
         } else {
             Err(anyhow::anyhow!(
                 "{}",
-                response.error.unwrap_or_else(|| "ws controller error".to_string())
+                response
+                    .error
+                    .unwrap_or_else(|| "ws controller error".to_string())
             ))
         }
     }

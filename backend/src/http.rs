@@ -663,7 +663,10 @@ fn sse_chat_completion(model: String, response_text: String) -> impl IntoRespons
                     "finish_reason": null
                 }]
             });
-            if tx.send(Ok(Event::default().data(event.to_string()))).is_err() {
+            if tx
+                .send(Ok(Event::default().data(event.to_string())))
+                .is_err()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(35)).await;
