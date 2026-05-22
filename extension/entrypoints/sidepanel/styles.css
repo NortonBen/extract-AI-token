@@ -1,0 +1,250 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #1b1f2a;
+  background: linear-gradient(135deg, #f6f7fb 0%, #eef2ff 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.page {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.title {
+  font-size: 28px;
+  margin: 0;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  color: #4d5d7a;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.tab {
+  background: #fff;
+  color: #1247ff;
+  border: 1px solid #bcc9e6;
+}
+
+.tab.active {
+  background: #1247ff;
+  color: #fff;
+  border-color: #1247ff;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #d8deed;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+input,
+select,
+button,
+textarea {
+  min-width: 0;
+  border: 1px solid #bcc9e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+button {
+  background: #1247ff;
+  color: #fff;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #fff;
+  color: #1247ff;
+}
+
+button.warn {
+  background: #b42f2f;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list-item {
+  border: 1px solid #e0e6f3;
+  border-radius: 6px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.muted {
+  color: #63708d;
+  font-size: 13px;
+}
+
+.chat-box {
+  min-height: 84px;
+  width: 100%;
+  resize: vertical;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stat {
+  border: 1px solid #e0e6f3;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(12, 20, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.dialog-card {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid #d8deed;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.label {
+  min-width: 56px;
+  color: #4d5d7a;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 780px) {
+  .page {
+    padding: 10px;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .title {
+    font-size: 20px;
+  }
+
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 10px;
+    border-radius: 6px;
+  }
+
+  .card h2 {
+    font-size: 18px;
+    margin-bottom: 8px;
+  }
+
+  .subtitle,
+  .muted {
+    font-size: 12px;
+  }
+
+  .row {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  input,
+  select,
+  button,
+  textarea {
+    font-size: 13px;
+    padding: 6px 8px;
+    border-radius: 5px;
+  }
+
+  .list {
+    gap: 6px;
+  }
+
+  .list-item {
+    padding: 8px;
+    gap: 6px;
+    border-radius: 5px;
+  }
+
+  .chat-box {
+    min-height: 72px;
+  }
+
+  .stat {
+    padding: 8px;
+    font-size: 13px;
+  }
+
+  .dialog-card {
+    padding: 12px;
+    border-radius: 8px;
+  }
+}

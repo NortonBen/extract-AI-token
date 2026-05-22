@@ -1,0 +1,8 @@
+.DS_Store
+.output
+.wxt
+dist
+node_modules
+data
+target
+build
