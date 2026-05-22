@@ -4,6 +4,38 @@
 
 **Extract Token** helps you work with multiple Gemini accounts in Chrome from one place: manage accounts, open the right tab per account, send prompts, and keep chat history—while a small **desktop app** runs the local data service on your machine.
 
+## Screenshots
+
+Two main pieces: the **desktop app** (tray, starts the backend) and the **Chrome extension** (side panel for accounts and chat).
+
+### Desktop app
+
+Dashboard: backend status, API URL (`http://127.0.0.1:9516/v1`), account/history stats.
+
+![Desktop app dashboard](docs/screenshots/desktop-dashboard.png)
+
+### Chrome extension (side panel)
+
+| Screen | Description |
+|--------|-------------|
+| Dashboard | Accounts, tabs, tokens, backend connection |
+| Add account | Detect profile from the active Gemini tab |
+| Chat | Send test prompts, optional stream, view replies |
+
+#### Extension dashboard
+
+![Extension dashboard](docs/screenshots/extension-dashboard.png)
+
+#### Add Gemini account
+
+Open a Gemini tab → **Accounts** → **Add Account** → **Detect From Active Gemini Tab** → **Create**.
+
+![Add Gemini account](docs/screenshots/extension-add-account.png)
+
+#### Extension chat
+
+![Extension chat](docs/screenshots/extension-chat.png)
+
 ## Message & API capabilities
 
 | Capability | Status | Notes |

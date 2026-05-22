@@ -12,7 +12,11 @@ import 'log_format.dart';
 
 const _kPortKey = 'backend_port';
 const _kPublicBindKey = 'backend_public_bind';
-const _kMaxLogLines = 500;
+/// Giữ ít dòng để giảm RAM (ListView + Text widgets).
+const _kMaxLogLines = 200;
+const _kMaxLogLineChars = 480;
+const _kHealthInterval = Duration(seconds: 20);
+const _kDashboardInterval = Duration(seconds: 12);
 
 // ─── BackendStatus ────────────────────────────────────────────────────────────
 
@@ -32,6 +36,23 @@ class DashboardData {
   final int enabledAccountCount;
   final int busyCount;
   final int historyCount;
+
+  @override
+  bool operator ==(Object other) {
+    return other is DashboardData &&
+        accountCount == other.accountCount &&
+        enabledAccountCount == other.enabledAccountCount &&
+        busyCount == other.busyCount &&
+        historyCount == other.historyCount;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        accountCount,
+        enabledAccountCount,
+        busyCount,
+        historyCount,
+      );
 }
 
 // ─── AppState ─────────────────────────────────────────────────────────────────
@@ -52,8 +73,13 @@ class AppState extends ChangeNotifier {
   final List<String> logs = [];
 
   final _BackendLauncher _launcher = _BackendLauncher();
+  final http.Client _http = http.Client();
   Timer? _healthTimer;
   Timer? _dashboardTimer;
+  Timer? _logNotifyDebounce;
+
+  /// 0=Dashboard, 1=Logs, 2=Settings — dùng để giảm poll/rebuild khi không xem tab.
+  int activeTab = 0;
 
   // ── Initialise (load prefs, start) ──────────────────────────────────────────
 
@@ -109,6 +135,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setActiveTab(int index) {
+    if (activeTab == index) return;
+    activeTab = index;
+    _syncPollingTimers();
+    if (index == 1) {
+      _logNotifyDebounce?.cancel();
+      notifyListeners();
+    }
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────────
 
   /// Gọi khi [status] đổi — refresh tray (old app không refresh mỗi log/poll).
@@ -119,14 +155,32 @@ class AppState extends ChangeNotifier {
     errorMessage = error;
     notifyListeners();
     onTrayRefresh?.call();
+    if (s == BackendStatus.running) {
+      _syncPollingTimers();
+    } else {
+      _dashboardTimer?.cancel();
+      _dashboardTimer = null;
+    }
   }
 
   void _addLog(String line) {
-    final clean = stripAnsiEscapes(line);
+    var clean = stripAnsiEscapes(line);
     if (clean.isEmpty) return;
+    if (clean.length > _kMaxLogLineChars) {
+      clean = '${clean.substring(0, _kMaxLogLineChars)}…';
+    }
     logs.add(clean);
     if (logs.length > _kMaxLogLines) logs.removeAt(0);
-    notifyListeners();
+    if (activeTab == 1) {
+      _scheduleLogNotify();
+    }
+  }
+
+  void _scheduleLogNotify() {
+    _logNotifyDebounce?.cancel();
+    _logNotifyDebounce = Timer(const Duration(milliseconds: 200), () {
+      notifyListeners();
+    });
   }
 
   void _log(String msg) => _addLog(msg);
@@ -148,7 +202,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _ping() async {
-    final res = await http
+    final res = await _http
         .get(Uri.parse('http://127.0.0.1:$port/health'))
         .timeout(const Duration(seconds: 2));
     if (res.statusCode != 200) throw Exception('status ${res.statusCode}');
@@ -156,10 +210,17 @@ class AppState extends ChangeNotifier {
 
   void _startTimers() {
     _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(_kHealthInterval, (_) => _refreshHealth());
+    _syncPollingTimers();
+  }
+
+  void _syncPollingTimers() {
     _dashboardTimer?.cancel();
-    _healthTimer = Timer.periodic(const Duration(seconds: 5), (_) => _refreshHealth());
-    _dashboardTimer = Timer.periodic(const Duration(seconds: 3), (_) => _refreshDashboard());
-    _refreshDashboard();
+    _dashboardTimer = null;
+    if (status == BackendStatus.running && activeTab == 0) {
+      unawaited(_refreshDashboard());
+      _dashboardTimer = Timer.periodic(_kDashboardInterval, (_) => _refreshDashboard());
+    }
   }
 
   Future<void> _refreshHealth() async {
@@ -172,19 +233,21 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _refreshDashboard() async {
-    if (status != BackendStatus.running) return;
+    if (status != BackendStatus.running || activeTab != 0) return;
     try {
-      final res = await http
+      final res = await _http
           .get(Uri.parse('http://127.0.0.1:$port/v1/dashboard'))
           .timeout(const Duration(seconds: 2));
       if (res.statusCode == 200) {
         final j = jsonDecode(res.body) as Map<String, dynamic>;
-        dashboard = DashboardData(
+        final next = DashboardData(
           accountCount: (j['account_count'] as num?)?.toInt() ?? 0,
           enabledAccountCount: (j['enabled_account_count'] as num?)?.toInt() ?? 0,
           busyCount: (j['busy_count'] as num?)?.toInt() ?? 0,
           historyCount: (j['history_count'] as num?)?.toInt() ?? 0,
         );
+        if (dashboard == next) return;
+        dashboard = next;
         notifyListeners();
       }
     } catch (_) {}
@@ -212,6 +275,8 @@ class _BackendLauncher {
         'NO_COLOR': '1',
         'APP_ADDR': addr,
         'SQLITE_PATH': dbPath,
+        // Ít log HTTP trace → ít dòng đẩy vào UI Flutter.
+        'RUST_LOG': Platform.environment['RUST_LOG'] ?? 'info,tab_debug=info,tower_http=warn,hyper=warn',
       },
       mode: ProcessStartMode.normal,
     );

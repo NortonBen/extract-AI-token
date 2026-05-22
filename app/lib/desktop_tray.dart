@@ -76,15 +76,15 @@ class DesktopTray {
     final s = AppState.instance;
     final port = s.port;
     if (s.status == BackendStatus.starting) {
-      return 'Extract AI Token · cổng $port · đang khởi động…';
+      return 'Extract AI Token · port $port · starting…';
     }
     if (s.status == BackendStatus.running) {
-      return 'Extract AI Token · cổng $port · backend đang chạy';
+      return 'Extract AI Token · port $port · backend running';
     }
     if (s.status == BackendStatus.failed) {
-      return 'Extract AI Token · cổng $port · lỗi';
+      return 'Extract AI Token · port $port · failed';
     }
-    return 'Extract AI Token · cổng $port · backend đã dừng';
+    return 'Extract AI Token · port $port · backend stopped';
   }
 
   Future<void> _pushMenu() async {
@@ -99,17 +99,17 @@ class DesktopTray {
           MenuItem(
             key: 'status',
             label: switch (s.status) {
-              BackendStatus.starting => 'Đang khởi động… (cổng $port)',
-              BackendStatus.running => '● Đang chạy (cổng $port)',
-              BackendStatus.stopped => '○ Đã dừng (cổng $port)',
-              BackendStatus.failed => '✕ Lỗi (cổng $port)',
+              BackendStatus.starting => 'Starting… (port $port)',
+              BackendStatus.running => '● Running (port $port)',
+              BackendStatus.stopped => '○ Stopped (port $port)',
+              BackendStatus.failed => '✕ Failed (port $port)',
             },
             disabled: true,
           ),
           MenuItem.separator(),
           MenuItem(
             key: 'show',
-            label: 'Mở cửa sổ',
+            label: 'Open Window',
             onClick: (_) async {
               await windowManager.show();
               await windowManager.focus();
@@ -118,7 +118,7 @@ class DesktopTray {
           MenuItem.separator(),
           MenuItem(
             key: 'copy_url',
-            label: 'Sao chép địa chỉ API',
+            label: 'Copy API URL',
             disabled: busy,
             onClick: (_) async {
               await Clipboard.setData(ClipboardData(text: apiV1Url(port)));
@@ -127,7 +127,7 @@ class DesktopTray {
           MenuItem.separator(),
           MenuItem(
             key: 'start',
-            label: 'Khởi động backend',
+            label: 'Start Backend',
             disabled: busy || running,
             onClick: (_) {
               unawaited(s.start());
@@ -135,7 +135,7 @@ class DesktopTray {
           ),
           MenuItem(
             key: 'restart',
-            label: 'Khởi động lại backend',
+            label: 'Restart Backend',
             disabled: busy || !running,
             onClick: (_) {
               unawaited(s.restart());
@@ -143,7 +143,7 @@ class DesktopTray {
           ),
           MenuItem(
             key: 'stop',
-            label: 'Dừng backend',
+            label: 'Stop Backend',
             disabled: busy || !running,
             onClick: (_) {
               unawaited(s.stop());
@@ -152,7 +152,7 @@ class DesktopTray {
           MenuItem.separator(),
           MenuItem(
             key: 'quit',
-            label: 'Thoát ứng dụng',
+            label: 'Quit',
             onClick: (_) => exit(0),
           ),
         ],

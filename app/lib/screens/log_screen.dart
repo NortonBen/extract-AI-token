@@ -47,15 +47,9 @@ class _LogScreenState extends State<LogScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    final logs = state.logs;
-
-    // Auto-scroll when new lines arrive
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_autoScroll && _scroll.hasClients) {
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      }
-    });
+    final running = context.select<AppState, bool>(
+      (s) => s.status == BackendStatus.running,
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xff0d1117),
@@ -65,19 +59,22 @@ class _LogScreenState extends State<LogScreen> {
           children: [
             const Text('Logs'),
             const SizedBox(width: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Text(
-                '${logs.length}',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textSecondary,
-                  fontWeight: FontWeight.w500,
+            Selector<AppState, int>(
+              selector: (_, s) => s.logs.length,
+              builder: (_, count, child) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Text(
+                  '$count',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
             ),
@@ -88,46 +85,68 @@ class _LogScreenState extends State<LogScreen> {
           child: Container(height: 1, color: AppColors.border),
         ),
         actions: [
-          IconButton(
-            tooltip: 'Copy all logs',
-            icon: const Icon(Icons.copy_rounded, size: 18),
-            style: IconButton.styleFrom(
-              hoverColor: AppColors.card,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          Selector<AppState, List<String>>(
+            selector: (_, s) => s.logs,
+            builder: (context, logs, _) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Copy all logs',
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  style: IconButton.styleFrom(
+                    hoverColor: AppColors.card,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: logs.isEmpty
+                      ? null
+                      : () {
+                          Clipboard.setData(ClipboardData(text: logs.join('\n')));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Logs copied'),
+                              width: 180,
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                ),
+                IconButton(
+                  tooltip: 'Clear logs',
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 18),
+                  style: IconButton.styleFrom(
+                    hoverColor: AppColors.card,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: logs.isEmpty
+                      ? null
+                      : context.read<AppState>().clearLogs,
+                ),
+                const SizedBox(width: 4),
+              ],
             ),
-            onPressed: logs.isEmpty
-                ? null
-                : () {
-                    Clipboard.setData(ClipboardData(text: logs.join('\n')));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Logs copied'),
-                        width: 180,
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                  },
           ),
-          IconButton(
-            tooltip: 'Clear logs',
-            icon: const Icon(Icons.delete_sweep_rounded, size: 18),
-            style: IconButton.styleFrom(
-              hoverColor: AppColors.card,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            onPressed: logs.isEmpty ? null : state.clearLogs,
-          ),
-          const SizedBox(width: 4),
         ],
       ),
-      body: logs.isEmpty
-          ? _EmptyLogs(running: state.status == BackendStatus.running)
-          : ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
-              itemCount: logs.length,
-              itemBuilder: (context, i) => _LogLine(line: logs[i], index: i),
-            ),
+      body: Selector<AppState, List<String>>(
+        selector: (_, s) => s.logs,
+        builder: (context, logs, _) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_autoScroll && _scroll.hasClients && logs.isNotEmpty) {
+              _scroll.jumpTo(_scroll.position.maxScrollExtent);
+            }
+          });
+          if (logs.isEmpty) {
+            return _EmptyLogs(running: running);
+          }
+          return ListView.builder(
+            controller: _scroll,
+            padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+            itemCount: logs.length,
+            cacheExtent: 240,
+            itemBuilder: (context, i) => _LogLine(line: logs[i], index: i),
+          );
+        },
+      ),
       floatingActionButton: _autoScroll
           ? null
           : FloatingActionButton.small(
@@ -270,7 +289,7 @@ class _LogLine extends StatelessWidget {
           ],
           // Log text
           Expanded(
-            child: SelectableText(
+            child: Text(
               text,
               style: TextStyle(
                 fontFamily: 'monospace',

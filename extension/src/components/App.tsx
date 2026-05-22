@@ -18,7 +18,14 @@ import {
   Popconfirm,
   Divider
 } from "antd";
-import { ReloadOutlined, SettingOutlined, CheckCircleFilled, DisconnectOutlined } from "@ant-design/icons";
+import {
+  CheckCircleFilled,
+  DisconnectOutlined,
+  GithubOutlined,
+  ReloadOutlined,
+  SettingOutlined
+} from "@ant-design/icons";
+import { GITHUB_REPO_URL } from "../constants";
 import {
   clearHistory,
   deleteAccount,
@@ -302,7 +309,8 @@ export function App() {
   const accountOptions = accounts.map((item) => ({ label: item.label, value: item.id }));
 
   return (
-    <div className="page">
+    <div className="page page-layout">
+      <div className="page-main">
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, width: "100%" }}>
           <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
@@ -431,6 +439,20 @@ export function App() {
           ]}
         />
       </Space>
+      </div>
+
+      <footer className="extension-footer">
+        <a
+          href={GITHUB_REPO_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="extension-footer-link"
+          title="Mã nguồn trên GitHub"
+        >
+          <GithubOutlined />
+          <span>GitHub</span>
+        </a>
+      </footer>
 
       <Modal
         title="Backend Settings"

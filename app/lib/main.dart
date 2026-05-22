@@ -213,17 +213,19 @@ class _ShellState extends State<_Shell> {
   int _index = 0;
   bool _sidebarExpanded = true;
 
-  static const _pages = [
-    DashboardScreen(),
-    LogScreen(),
-    SettingsScreen(),
-  ];
-
   static const _navItems = [
     (Icons.dashboard_outlined, Icons.dashboard_rounded, 'Dashboard'),
     (Icons.terminal_outlined, Icons.terminal_rounded, 'Logs'),
     (Icons.settings_outlined, Icons.settings_rounded, 'Settings'),
   ];
+
+  Widget _pageAt(int index) {
+    return switch (index) {
+      0 => const DashboardScreen(),
+      1 => const LogScreen(),
+      _ => const SettingsScreen(),
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -234,12 +236,15 @@ class _ShellState extends State<_Shell> {
           _Sidebar(
             selectedIndex: _index,
             expanded: _sidebarExpanded,
-            onSelect: (i) => setState(() => _index = i),
+            onSelect: (i) {
+              setState(() => _index = i);
+              AppState.instance.setActiveTab(i);
+            },
             onToggle: () => setState(() => _sidebarExpanded = !_sidebarExpanded),
             navItems: _navItems,
           ),
           Container(width: 1, color: AppColors.border),
-          Expanded(child: _pages[_index]),
+          Expanded(child: _pageAt(_index)),
         ],
       ),
     );

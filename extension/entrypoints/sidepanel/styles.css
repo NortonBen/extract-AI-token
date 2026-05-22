@@ -20,6 +20,39 @@ body {
   padding: 16px;
 }
 
+.page-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-main {
+  flex: 1;
+  min-height: 0;
+}
+
+.extension-footer {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  text-align: center;
+}
+
+.extension-footer-link {
+  color: #63708d;
+  font-size: 12px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.15s ease;
+}
+
+.extension-footer-link:hover {
+  color: #1247ff;
+}
+
 .header {
   display: flex;
   justify-content: space-between;

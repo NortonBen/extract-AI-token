@@ -4,6 +4,38 @@
 
 **Extract Token** giúp bạn làm việc với nhiều tài khoản Gemini trên Chrome từ một chỗ: quản lý account, mở đúng tab cho từng account, gửi prompt và lưu lịch sử chat — kèm **ứng dụng desktop** chạy dịch vụ dữ liệu cục bộ trên máy bạn.
 
+## Giao diện
+
+Hai phần chính: **app desktop** (tray, khởi chạy backend) và **extension Chrome** (side panel quản lý account + chat).
+
+### Ứng dụng desktop
+
+Dashboard: trạng thái backend, URL API (`http://127.0.0.1:9516/v1`), thống kê account/history.
+
+![Dashboard ứng dụng desktop](docs/screenshots/desktop-dashboard.png)
+
+### Extension Chrome (side panel)
+
+| Màn hình | Mô tả |
+|----------|--------|
+| Dashboard | Tổng quan account, tab, token, kết nối backend |
+| Thêm account | Detect thông tin từ tab Gemini đang mở |
+| Chat | Gửi prompt thử, stream, xem phản hồi |
+
+#### Dashboard (extension)
+
+![Dashboard extension](docs/screenshots/extension-dashboard.png)
+
+#### Thêm account Gemini
+
+Mở tab Gemini → **Accounts** → **Add Account** → **Detect From Active Gemini Tab** → **Create**.
+
+![Thêm account Gemini](docs/screenshots/extension-add-account.png)
+
+#### Chat (thử prompt)
+
+![Chat extension](docs/screenshots/extension-chat.png)
+
 ## Khả năng tin nhắn & API
 
 | Khả năng | Trạng thái | Ghi chú |
