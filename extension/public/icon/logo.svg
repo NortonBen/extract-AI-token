@@ -1,0 +1,33 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="chipGradFinal" x1="40" y1="36" x2="214" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Main chip body with strong edge contrast for both light/dark backgrounds -->
+  <rect x="56" y="56" width="144" height="144" rx="26" fill="url(#chipGradFinal)"/>
+  <rect x="56" y="56" width="144" height="144" rx="26" stroke="#0B1220" stroke-opacity="0.25" stroke-width="4"/>
+
+  <!-- Processor core -->
+  <rect x="88" y="88" width="80" height="80" rx="14" fill="#0A1020"/>
+  <rect x="98" y="98" width="60" height="60" rx="10" fill="#67E8F9"/>
+  <rect x="108" y="108" width="40" height="40" rx="8" fill="#0A1020"/>
+
+  <!-- Pins -->
+  <g stroke="#06B6D4" stroke-width="10" stroke-linecap="round">
+    <path d="M24 88H56"/>
+    <path d="M24 128H56"/>
+    <path d="M24 168H56"/>
+    <path d="M200 88H232"/>
+    <path d="M200 128H232"/>
+    <path d="M200 168H232"/>
+    <path d="M88 24V56"/>
+    <path d="M128 24V56"/>
+    <path d="M168 24V56"/>
+    <path d="M88 200V232"/>
+    <path d="M128 200V232"/>
+    <path d="M168 200V232"/>
+  </g>
+</svg>

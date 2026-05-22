@@ -150,7 +150,7 @@ export function App() {
       pageRoot,
       label: values.label.trim() || "Gemini User",
       enabled: true,
-      defaultModel: "gemini-2.5-flash"
+      defaultModel: "gemini-flash"
     });
     setActiveAccountId(id);
     setAddAccountOpen(false);
@@ -233,8 +233,9 @@ export function App() {
     <div className="page">
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, width: "100%" }}>
-          <div style={{ minWidth: 0 }}>
-            <Title level={2} style={{ margin: 0, lineHeight: 1.15 }}>AI Browser Control</Title>
+          <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+            <img src="/icon/logo.svg" alt="Extract Token" width={28} height={28} style={{ flexShrink: 0 }} />
+            <Title level={2} style={{ margin: 0, lineHeight: 1.15 }}>Extract Token</Title>
           </div>
           <div
             style={{

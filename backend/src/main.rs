@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use anyhow::Context;
 use state::AppState;
 use tokio::net::TcpListener;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -15,16 +16,26 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let addr = env::var("APP_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
     let db_path = env::var("SQLITE_PATH").unwrap_or_else(|_| "data/app.db".to_string());
 
     let state = AppState::init(&db_path).with_context(|| "initialize app state")?;
-    let app = http::router(state).layer(TraceLayer::new_for_http());
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    let app = http::router(state)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http());
 
-    let socket_addr: SocketAddr = addr.parse().with_context(|| format!("invalid APP_ADDR={addr}"))?;
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("invalid APP_ADDR={addr}"))?;
     let listener = TcpListener::bind(socket_addr).await?;
     info!("backend listening on {}", socket_addr);
     info!("sqlite path: {}", db_path);

@@ -72,13 +72,23 @@ export async function sendPrompt(payload: {
   model: string;
   prompt: string;
 }): Promise<ChatResult> {
-  const res = await send({ type: "chat.send", payload });
-  if (!res.ok || !("result" in res)) throw new Error((res as any).error || "chat.send failed");
+  const res = await send({ type: "openai.chat.send", payload });
+  if (!res.ok || !("result" in res)) throw new Error((res as any).error || "openai.chat.send failed");
   return res.result;
 }
 
 export async function clearHistory(): Promise<void> {
   const res = await send({ type: "history.clear" });
+  if (!res.ok) throw new Error(res.error);
+}
+
+export async function stopPrompt(accountId: string): Promise<void> {
+  const res = await send({ type: "chat.stop", payload: { accountId } });
+  if (!res.ok) throw new Error(res.error);
+}
+
+export async function setAccountEnabled(accountId: string, enabled: boolean): Promise<void> {
+  const res = await send({ type: "account.set-enabled", payload: { accountId, enabled } });
   if (!res.ok) throw new Error(res.error);
 }
 

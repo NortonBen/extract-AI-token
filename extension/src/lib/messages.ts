@@ -18,7 +18,10 @@ export type ExtensionMessage =
   | { type: "account.detect-root" }
   | { type: "tab.ensure"; payload: EnsureTabRequest }
   | { type: "tab.command.execute"; payload: { accountId: string; command: GeminiExecutorCommand; prompt?: string } }
+  | { type: "openai.chat.send"; payload: SendPromptRequest }
   | { type: "chat.send"; payload: SendPromptRequest }
+  | { type: "chat.stop"; payload: { accountId: string } }
+  | { type: "account.set-enabled"; payload: { accountId: string; enabled: boolean } }
   | { type: "history.clear" }
   | { type: "dashboard.get" }
   | { type: "backend.status.get" }

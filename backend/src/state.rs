@@ -2,13 +2,30 @@ use crate::models::{BusyState, Provider};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
+use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
+use tokio::time::{Duration, timeout};
+
+#[derive(Debug, Clone)]
+pub struct WsRpcResponse {
+    pub ok: bool,
+    pub data: Option<Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
+pub struct WsBridge {
+    pub sender: Option<mpsc::UnboundedSender<String>>,
+    pub pending: std::collections::HashMap<String, oneshot::Sender<WsRpcResponse>>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub busy: Arc<Mutex<BusyState>>,
+    pub ws_bridge: Arc<AsyncMutex<WsBridge>>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +64,8 @@ pub struct ModelRow {
 impl AppState {
     pub fn init(db_path: &str) -> anyhow::Result<Self> {
         if let Some(parent) = Path::new(db_path).parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("create db dir for {}", db_path))?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create db dir for {}", db_path))?;
         }
         let conn = Connection::open(db_path).with_context(|| format!("open sqlite {}", db_path))?;
         conn.execute_batch(
@@ -82,11 +100,74 @@ impl AppState {
             );
             "#,
         )?;
-        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN page_root TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute(
+            "ALTER TABLE accounts ADD COLUMN page_root TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             busy: Arc::new(Mutex::new(BusyState::default())),
+            ws_bridge: Arc::new(AsyncMutex::new(WsBridge::default())),
         })
+    }
+
+    pub async fn set_ws_sender(&self, sender: mpsc::UnboundedSender<String>) {
+        let mut bridge = self.ws_bridge.lock().await;
+        bridge.sender = Some(sender);
+    }
+
+    pub async fn clear_ws_sender(&self) {
+        let mut bridge = self.ws_bridge.lock().await;
+        bridge.sender = None;
+        bridge.pending.clear();
+    }
+
+    pub async fn resolve_ws_response(&self, id: &str, response: WsRpcResponse) -> bool {
+        let mut bridge = self.ws_bridge.lock().await;
+        if let Some(tx) = bridge.pending.remove(id) {
+            let _ = tx.send(response);
+            return true;
+        }
+        false
+    }
+
+    pub async fn call_ws_client(
+        &self,
+        req_type: &str,
+        payload: Value,
+        wait: Duration,
+    ) -> anyhow::Result<Value> {
+        let req_id = format!("rpc-{}", uuid_like());
+        let (tx, rx) = oneshot::channel::<WsRpcResponse>();
+        {
+            let mut bridge = self.ws_bridge.lock().await;
+            let sender = bridge
+                .sender
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("ws controller is not connected"))?
+                .clone();
+            bridge.pending.insert(req_id.clone(), tx);
+            let request = serde_json::json!({
+                "id": req_id,
+                "type": req_type,
+                "payload": payload
+            });
+            sender
+                .send(request.to_string())
+                .map_err(|_| anyhow::anyhow!("ws controller send failed"))?;
+        }
+        let response = timeout(wait, rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("ws controller timeout"))?
+            .map_err(|_| anyhow::anyhow!("ws controller dropped response"))?;
+        if response.ok {
+            Ok(response.data.unwrap_or(Value::Null))
+        } else {
+            Err(anyhow::anyhow!(
+                "{}",
+                response.error.unwrap_or_else(|| "ws controller error".to_string())
+            ))
+        }
     }
 
     pub fn upsert_account(&self, row: &AccountRow) -> anyhow::Result<()> {
@@ -138,7 +219,11 @@ impl AppState {
             Ok(AccountRow {
                 id: row.get(0)?,
                 provider: str_to_provider(row.get::<_, String>(1)?.as_str()),
-                user_index: if user_index_raw < 0 { None } else { Some(user_index_raw) },
+                user_index: if user_index_raw < 0 {
+                    None
+                } else {
+                    Some(user_index_raw)
+                },
                 page_root: row.get(3)?,
                 label: row.get(4)?,
                 enabled: row.get::<_, i32>(5)? != 0,
@@ -205,7 +290,9 @@ impl AppState {
 
     pub fn history_count(&self) -> anyhow::Result<usize> {
         let conn = self.db.lock().expect("db mutex poisoned");
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM history_messages", [], |row| row.get(0))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM history_messages", [], |row| {
+            row.get(0)
+        })?;
         Ok(count as usize)
     }
 
@@ -281,5 +368,16 @@ fn str_to_provider(value: &str) -> Provider {
 fn parse_rfc3339_utc(value: &str) -> rusqlite::Result<DateTime<Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|v| v.with_timezone(&Utc))
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{ns:x}")
 }

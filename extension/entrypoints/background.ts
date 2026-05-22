@@ -17,6 +17,12 @@ interface WsResponseEnvelope {
   error?: string;
 }
 
+interface WsIncomingRequestEnvelope {
+  id: string;
+  type: string;
+  payload?: WsPayload;
+}
+
 class BackendWsClient {
   private ws: WebSocket | null = null;
   private config: BackendConnectionConfig = { host: "127.0.0.1", port: 8787 };
@@ -73,6 +79,18 @@ class BackendWsClient {
     });
   }
 
+  async respond(id: string, ok: boolean, data?: unknown, error?: string): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        id,
+        ok,
+        data: data ?? null,
+        error: error ?? null
+      })
+    );
+  }
+
   private wsUrl(): string {
     return `ws://${this.config.host}:${this.config.port}/ws`;
   }
@@ -91,19 +109,35 @@ class BackendWsClient {
       this.status.lastError = null;
     };
 
-    this.ws.onmessage = (event) => {
-      let msg: WsResponseEnvelope;
+    this.ws.onmessage = async (event) => {
+      let msg: any;
       try {
-        msg = JSON.parse(String(event.data)) as WsResponseEnvelope;
+        msg = JSON.parse(String(event.data));
       } catch {
         return;
       }
-      const pending = this.pending.get(msg.id);
+      if (typeof msg?.type === "string" && typeof msg?.id === "string") {
+        const req = msg as WsIncomingRequestEnvelope;
+        try {
+          const data = await handleBackendControllerRequest(req.type, req.payload || {});
+          await this.respond(req.id, true, data);
+        } catch (error) {
+          await this.respond(
+            req.id,
+            false,
+            null,
+            error instanceof Error ? error.message : "controller request failed"
+          );
+        }
+        return;
+      }
+      const response = msg as WsResponseEnvelope;
+      const pending = this.pending.get(response.id);
       if (!pending) return;
       clearTimeout(pending.timer);
-      this.pending.delete(msg.id);
-      if (msg.ok) pending.resolve(msg.data);
-      else pending.reject(new Error(msg.error || "Backend error"));
+      this.pending.delete(response.id);
+      if (response.ok) pending.resolve(response.data);
+      else pending.reject(new Error(response.error || "Backend error"));
     };
 
     this.ws.onclose = () => {
@@ -149,7 +183,7 @@ class BackendWsClient {
 }
 
 const backend = new BackendWsClient();
-const MANAGED_GROUP_TITLE = "AI Browser Control";
+const MANAGED_GROUP_TITLE = "Extract Token";
 
 function isClosedMessageChannelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -252,7 +286,7 @@ function mapBackendAccount(raw: any): Account {
     pageRoot: normalizedPageRoot,
     label: String(raw?.label || ""),
     enabled: Boolean(raw?.enabled),
-    defaultModel: String(raw?.default_model || "gemini-2.5-flash"),
+    defaultModel: String(raw?.default_model || "gemini-flash"),
     createdAt: String(raw?.created_at || new Date().toISOString()),
     updatedAt: String(raw?.updated_at || new Date().toISOString())
   };
@@ -416,6 +450,51 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
   }
 }
 
+async function handleBackendControllerRequest(type: string, payload: WsPayload): Promise<unknown> {
+  if (type !== "controller.execute") {
+    throw new Error(`Unsupported controller type: ${type}`);
+  }
+  const action = String(payload?.action || "");
+  if (action !== "send_prompt") {
+    throw new Error(`Unsupported controller action: ${action}`);
+  }
+  const accountId = String(payload?.account_id || "");
+  const model = String(payload?.model || "google/gemini-flash");
+  const prompt = String(payload?.prompt || "");
+  if (!accountId || !prompt.trim()) {
+    throw new Error("Missing account_id or prompt");
+  }
+  const result = await sendPrompt({ accountId, model, prompt });
+  return {
+    account_id: result.accountId,
+    model: result.model,
+    response_text: result.responseText
+  };
+}
+
+async function sendPromptViaOpenAiApi(payload: { accountId: string; model: string; prompt: string }) {
+  const cfg = backend.getStatus();
+  const response = await fetch(`http://${cfg.host}:${cfg.port}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: payload.model,
+      stream: false,
+      account_id: payload.accountId,
+      messages: [{ role: "user", content: payload.prompt }]
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(data?.error || response.statusText));
+  }
+  const responseText = String(data?.choices?.[0]?.message?.content || "");
+  if (!responseText.trim()) {
+    throw new Error("OpenAI response content is empty");
+  }
+  return { accountId: payload.accountId, model: payload.model, responseText };
+}
+
 async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessageResponse> {
   switch (message.type) {
     case "state.get":
@@ -499,6 +578,10 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
       const result = await sendPrompt(message.payload);
       return { ok: true, result };
     }
+    case "openai.chat.send": {
+      const result = await sendPromptViaOpenAiApi(message.payload);
+      return { ok: true, result };
+    }
     default:
       return { ok: false, error: "Unsupported message type" };
   }
@@ -529,7 +612,7 @@ export default defineBackground(() => {
           page_root: buildGeminiUrl(0),
           label: "Gemini User 0",
           enabled: true,
-          default_model: "gemini-2.5-flash"
+          default_model: "gemini-flash"
         });
       }
     } catch {

@@ -1,16 +1,35 @@
 const SEND_SELECTORS = [
   "gem-icon-button.send-button button[aria-label='Gửi tin nhắn']",
-  "div.send-button-container.visible button[aria-label='Gửi tin nhắn']",
   "gem-icon-button.send-button button[aria-label='Send message']",
+  "send-button button[aria-label='Gửi tin nhắn']",
+  "send-button button[aria-label='Send message']",
+  "send-button button",
+  "button.send-button",
+  "div.send-button-container.visible button[aria-label='Gửi tin nhắn']",
   "div.send-button-container.visible button[aria-label='Send message']",
+  "div.send-button-container button[aria-label='Gửi tin nhắn']",
+  "div.send-button-container button[aria-label='Send message']",
   "button[aria-label='Gửi tin nhắn']",
   "button[aria-label='Send message']",
   "button[aria-label*='Gửi']",
   "button[aria-label*='Send']",
   "button[data-test-id*='send']",
+  "button[mat-icon-button][aria-label*='end']",
+  "button[mat-icon-button][aria-label*='ửi']",
   "div.send-button-container button",
   "footer button[type='button']",
   "button[type='submit']"
+];
+
+const LOADING_SELECTORS = [
+  ".bard-avatar.thinking",
+  ".stop-button-container.visible",
+  "button[aria-label='Stop response']",
+  "button[aria-label='Dừng phản hồi']",
+  "button[aria-label*='Stop']",
+  "button[aria-label*='Dừng']",
+  "model-response[loading]",
+  "[data-test-id='response-loading']"
 ];
 
 const COMPOSER_SELECTORS = [
@@ -104,9 +123,18 @@ function pressEnterFallback(): void {
   const editor = findBottomComposer();
   if (!editor) return;
   editor.focus();
-  editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-  editor.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", bubbles: true }));
-  editor.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+  const opts: KeyboardEventInit = {
+    key: "Enter",
+    code: "Enter",
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+    composed: true
+  };
+  editor.dispatchEvent(new KeyboardEvent("keydown", opts));
+  editor.dispatchEvent(new KeyboardEvent("keypress", opts));
+  editor.dispatchEvent(new KeyboardEvent("keyup", opts));
 }
 
 function setComposerPrompt(prompt: string): boolean {
@@ -143,29 +171,25 @@ function setComposerPrompt(prompt: string): boolean {
   return true;
 }
 
-function isPromptSubmitted(prevCount: number): { ok: boolean; reason: string } {
+function hasLoadingIndicator(): boolean {
+  for (const sel of LOADING_SELECTORS) {
+    if (document.querySelector(sel)) return true;
+  }
+  return false;
+}
+
+function isPromptSubmitted(prevCount: number, originalPrompt: string): { ok: boolean; reason: string } {
   const current = messageContentCount();
-  if (current > prevCount && prevCount >= 0) return { ok: true, reason: "message-content increased" };
-  if (document.querySelector(".bard-avatar.thinking")) return { ok: true, reason: "thinking started" };
+  if (current > prevCount) return { ok: true, reason: "message-content increased" };
+  if (hasLoadingIndicator()) return { ok: true, reason: "loading indicator visible" };
+
   const editor = findBottomComposer();
   const composerText = (editor?.innerText || editor?.textContent || "").trim();
   if (!composerText) return { ok: true, reason: "composer cleared" };
-  const submitContainer = document.querySelector("div.send-button-container.visible, div.send-button-container.inner");
-  const submitContainerReady = submitContainer?.classList.contains("submit") || false;
-  if (!submitContainerReady) return { ok: false, reason: "submit container not ready" };
-
-  let sendBtnVisible = false;
-  let sendBtnDisabled = false;
-  for (const sel of SEND_SELECTORS) {
-    const btn = document.querySelector(sel);
-    if (!(btn instanceof HTMLElement)) continue;
-    if (!isNodeVisible(btn)) continue;
-    sendBtnVisible = true;
-    sendBtnDisabled = btn.getAttribute("disabled") !== null || btn.getAttribute("aria-disabled") === "true";
-    break;
+  // Composer text changed (e.g. cleared then placeholder re-rendered) => assume sent
+  if (composerText !== originalPrompt.trim()) {
+    return { ok: true, reason: "composer text changed" };
   }
-  if (!sendBtnVisible) return { ok: true, reason: "send button hidden" };
-  if (sendBtnDisabled) return { ok: true, reason: "send button disabled" };
   return { ok: false, reason: "waiting submit confirmation" };
 }
 
@@ -225,25 +249,28 @@ function detectGeminiAccountPreview() {
   };
 }
 
-async function waitForPromptSubmission(prevCount: number): Promise<void> {
-  for (let second = 1; second <= 18; second += 1) {
-    await sleep(1000);
-    const check = isPromptSubmitted(prevCount);
+async function waitForPromptSubmission(prevCount: number, originalPrompt: string): Promise<void> {
+  let lastReason = "";
+  for (let second = 1; second <= 20; second += 1) {
+    await sleep(800);
+    const check = isPromptSubmitted(prevCount, originalPrompt);
+    lastReason = check.reason;
     if (check.ok) return;
-    if (second <= 6 || second === 8 || second === 10 || second === 12 || second === 15) {
+    if (second <= 8 || second === 10 || second === 12 || second === 14 || second === 16) {
       if (!clickSendButton()) pressEnterFallback();
     }
   }
-  throw new Error("Send not confirmed after submission checks");
+  throw new Error(`Send not confirmed after submission checks (${lastReason})`);
 }
 
 async function waitForResponseStable(prevCount: number): Promise<string> {
   for (let i = 0; i < 60; i += 1) {
     if (messageContentCount() > prevCount) break;
+    if (latestResponseText().trim()) break;
     await sleep(1000);
   }
   for (let i = 0; i < 60; i += 1) {
-    if (!document.querySelector(".bard-avatar.thinking")) break;
+    if (!hasLoadingIndicator()) break;
     await sleep(1000);
   }
 
@@ -272,8 +299,9 @@ async function sendGeminiPrompt(prompt: string): Promise<{ responseText: string 
   const injected = setComposerPrompt(trimmed);
   if (!injected) throw new Error("Gemini composer not found");
 
+  await sleep(150);
   if (!clickSendButton()) pressEnterFallback();
-  await waitForPromptSubmission(prevCount);
+  await waitForPromptSubmission(prevCount, trimmed);
   const responseText = await waitForResponseStable(prevCount);
   if (!responseText.trim()) {
     throw new Error("Gemini returned empty response");
