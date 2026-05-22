@@ -4,7 +4,7 @@ export default defineConfig({
   manifest: {
     name: "Extract Token",
     description: "Gemini multi-account tab controller",
-    version: "0.1.0",
+    version: "0.0.2",
     permissions: ["storage", "tabs", "tabGroups", "scripting", "sidePanel"],
     host_permissions: ["https://gemini.google.com/*"],
     icons: {
