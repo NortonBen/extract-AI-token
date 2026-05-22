@@ -2,29 +2,224 @@
 
 > **English:** [README.md](README.md)
 
-**Extract Token** giúp bạn làm việc với nhiều tài khoản Gemini trên Chrome từ một chỗ: quản lý account, mở đúng tab cho từng account, gửi prompt và lưu lịch sử chat — kèm **ứng dụng macOS** chạy dịch vụ dữ liệu cục bộ trên máy bạn.
+**Extract Token** giúp bạn làm việc với nhiều tài khoản Gemini trên Chrome từ một chỗ: quản lý account, mở đúng tab cho từng account, gửi prompt và lưu lịch sử chat — kèm **ứng dụng desktop** chạy dịch vụ dữ liệu cục bộ trên máy bạn.
+
+## Hỗ trợ nền tảng
+
+### Hệ điều hành
+
+| Thành phần | macOS | Windows | Linux |
+|------------|:-----:|:-------:|:-----:|
+| **Extension Chrome** (side panel) | ✅ | ✅ | ✅ |
+| **Ứng dụng desktop** (tray + khởi chạy backend) | ✅ | ✅ | ✅ |
+| **Backend cục bộ** (SQLite, API, WebSocket) | ✅ | ✅ | ✅ |
+
+Backend chỉ lắng nghe trên máy bạn (mặc định `127.0.0.1:9516`). Account và history lưu cục bộ trong SQLite, do app desktop quản lý trên từng hệ điều hành.
+
+### Trình duyệt (extension)
+
+Dùng trên trình duyệt **Chromium** hỗ trợ **Manifest V3** và **Side Panel** (cùng gói extension: `chrome-mv3`).
+
+| Trình duyệt | Hỗ trợ | Ghi chú |
+|-------------|:------:|---------|
+| Google Chrome | ✅ | Khuyến nghị; Chrome 114+ cho side panel |
+| Microsoft Edge | ✅ | Tải extension unpacked |
+| Brave, Arc, Chromium, … | ✅ | Nếu có MV3 + side panel |
+| Firefox | ❌ | Định dạng extension khác (chưa có) |
+| Safari | ❌ | Không hỗ trợ |
+
+### Dịch vụ AI / web
+
+| Dịch vụ | Hỗ trợ | Ghi chú |
+|---------|:------:|---------|
+| **Google Gemini** | ✅ | Chính; extension chạy trên `gemini.google.com` |
+| **ChatGPT** | — | Có trong kiểu account; chưa tự động hóa web |
+
+### Ghi chú theo hệ điều hành (app desktop)
+
+| HĐH | Tray | Binary backend (đóng gói / build) |
+|-----|------|-------------------------------------|
+| **macOS** | Icon menu bar | `macos-backend` / `Resources/backend` |
+| **Windows** | Khay thông báo (notification area) | `windows-backend.exe` cạnh app |
+| **Linux** | System tray (tùy môi trường desktop) | `linux-backend` cạnh app |
+
+Trên **Linux**, **Copy API URL** từ tray có thể cần cài `wl-copy`, `xclip` hoặc `xsel` nếu sao chép clipboard thất bại.
+
+### Chưa hỗ trợ
+
+- Di động (iOS / Android)
+- Cài extension trên Firefox / Safari
+- Chỉ dùng extension mà **không** có backend cục bộ trên cùng máy (cấu hình mặc định)
 
 ## Bạn cần chuẩn bị
 
 | Hạng mục | Ghi chú |
 |----------|---------|
-| **Google Chrome** | Cài extension Extract Token |
-| **macOS** | Ứng dụng desktop chạy backend cục bộ (khuyến nghị) |
-| **Tài khoản Gemini** | Đã đăng nhập trên [gemini.google.com](https://gemini.google.com) trong Chrome |
+| **Trình duyệt Chromium** | Chrome, Edge hoặc tương thích — cho extension |
+| **Hệ điều hành desktop** | macOS, Windows hoặc Linux — cho app tray chạy backend |
+| **Tài khoản Gemini** | Đã đăng nhập tại [gemini.google.com](https://gemini.google.com) |
 
-Backend chỉ lắng nghe trên máy bạn (mặc định `127.0.0.1:8787`). Dữ liệu account và history lưu cục bộ trong SQLite do ứng dụng macOS quản lý.
+## Chạy `extract-ai-token` (CLI) và ứng dụng desktop
+
+Có hai cách chạy API cục bộ: **app desktop** (tray + giao diện, tự bật backend) hoặc **CLI `extract-ai-token`** (chỉ backend). Cùng cổng và API mặc định `127.0.0.1:9516`.
+
+### Tải về (GitHub Releases)
+
+Trên bản release có tag `v*.*.*`, chọn file đúng hệ điều hành:
+
+| File | Nội dung |
+|------|----------|
+| `extract-ai-token-backend-macos.zip` | CLI `extract-ai-token` (macOS, universal) |
+| `extract-ai-token-backend-windows.zip` | CLI `extract-ai-token.exe` |
+| `extract-ai-token-backend-linux.tar.gz` | CLI `extract-ai-token` |
+| `app-macos.zip` (hoặc `*-macos.zip`) | `.app` macOS kèm backend |
+| `extract-ai-token-windows.zip` | Thư mục app Windows + `backend.exe` |
+| `extract-ai-token-linux.tar.gz` | Thư mục `bundle/` Linux + `backend` |
+
+Gói extension Chrome đăng riêng (`extension-chrome`).
+
+### A. Ứng dụng desktop (khuyến nghị)
+
+**macOS**
+
+1. Giải nén và mở **`app.app`** (tên `.app` trên release).
+2. Backend tự chạy; tìm icon trên **menu bar**.
+3. Tray → **Open Dashboard** → trạng thái **Running**.
+
+**Windows**
+
+1. Giải nén `extract-ai-token-windows.zip`.
+2. Chạy **`app.exe`** trong thư mục `Release` (cùng thư mục có `backend.exe`).
+3. Dùng icon **system tray** → Dashboard / Settings.
+
+**Linux**
+
+1. Giải nén `extract-ai-token-linux.tar.gz`.
+2. Trong thư mục `bundle`:
+
+   ```bash
+   chmod +x app backend
+   ./app
+   ```
+
+3. Menu **tray**; một số desktop cần panel hỗ trợ AppIndicator.
+
+**Chạy từ mã nguồn** (cần Flutter SDK):
+
+```bash
+# 1) Build backend vào build/ (tên file phải khớp app)
+cd backend && cargo build --release
+cd ..
+mkdir -p build
+cp backend/target/release/backend build/macos-backend          # macOS
+# cp backend/target/release/backend.exe build/windows-backend.exe  # Windows
+# cp backend/target/release/backend build/linux-backend            # Linux
+
+# 2) Chạy app Flutter
+cd app
+flutter pub get
+flutter run -d macos      # hoặc: windows, linux
+```
+
+Build release:
+
+```bash
+cd app && flutter build macos --release    # macos | windows | linux
+```
+
+Sau đó copy binary backend cạnh file app đã build (xem [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+
+---
+
+### B. Chỉ CLI — `extract-ai-token`
+
+Tiến trình backend độc lập (không có tray). Dùng khi chỉ cần HTTP/WebSocket hoặc khởi chạy bằng script.
+
+**macOS / Linux**
+
+```bash
+unzip extract-ai-token-backend-macos.zip   # hoặc giải nén .tar.gz trên Linux
+chmod +x extract-ai-token
+./extract-ai-token
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Expand-Archive extract-ai-token-backend-windows.zip -DestinationPath .
+.\extract-ai-token.exe
+```
+
+**Biến môi trường**
+
+| Biến | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `APP_ADDR` | `127.0.0.1:9516` | Địa chỉ lắng nghe (`host:port`) |
+| `SQLITE_PATH` | `data/app.db` | File SQLite (tạo theo thư mục làm việc) |
+| `RUST_LOG` | `info` | Mức log (`debug`, `info`, …) |
+
+**Ví dụ**
+
+```bash
+# Cổng và DB mặc định trong ./data/app.db
+./extract-ai-token
+
+# Đổi cổng
+APP_ADDR=127.0.0.1:9516 ./extract-ai-token
+
+# Đổi đường dẫn database
+SQLITE_PATH="$HOME/.extract-ai-token/app.db" ./extract-ai-token
+```
+
+Kiểm tra:
+
+```bash
+curl http://127.0.0.1:9516/health
+```
+
+Dừng bằng `Ctrl+C` trong terminal.
+
+**Bắt app desktop dùng binary CLI tùy chỉnh** (tùy chọn):
+
+```bash
+export AI_BROWSER_BACKEND_BIN=/đường/dẫn/tuyệt/đối/tới/extract-ai-token
+open app.app   # macOS — app sẽ spawn binary này thay vì bản đóng gói sẵn
+```
+
+**Build CLI từ mã nguồn**
+
+```bash
+cd backend
+cargo build --release
+# Binary: backend/target/release/backend (có thể đổi tên thành extract-ai-token)
+./target/release/backend
+```
+
+Binary universal macOS (tùy chọn, giống CI):
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cd backend
+cargo build --release --target aarch64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+lipo -create \
+  target/aarch64-apple-darwin/release/backend \
+  target/x86_64-apple-darwin/release/backend \
+  -output ../build/extract-ai-token
+chmod +x ../build/extract-ai-token
+```
+
+> **Lưu ý:** Mỗi cổng chỉ nên có **một** backend — CLI **hoặc** process do app quản lý, không chạy trùng cùng port.
 
 ## Bắt đầu sử dụng
 
-### 1. Bật backend (ứng dụng macOS)
+### 1. Bật backend (app desktop hoặc CLI)
 
-1. Mở **Extract AI Token** trên Mac (từ gói cài đặt bạn nhận được).
-2. Ứng dụng tự khởi động backend và hiện biểu tượng trên **thanh menu** (menu bar).
-3. Xác nhận trạng thái **Running**:
-   - Bấm icon menu bar → **Open Dashboard**, hoặc
-   - Menu tray hiển thị **● Running (port 8787)** (cổng có thể khác nếu bạn đổi trong Settings).
+**Dùng app desktop:** mở app theo hướng dẫn [A. Ứng dụng desktop](#a-ứng-dụng-desktop-khuyến-nghị) ở trên; xác nhận **Running** trên tray/Dashboard.
 
-**Menu tray (icon menu bar):**
+**Chỉ dùng CLI:** chạy `./extract-ai-token` (xem [B. Chỉ CLI](#b-chỉ-cli--extract-ai-token)); cấu hình extension Chrome cùng host/port.
+
+**Menu tray:**
 
 | Thao tác | Ý nghĩa |
 |----------|---------|
@@ -36,10 +231,10 @@ Backend chỉ lắng nghe trên máy bạn (mặc định `127.0.0.1:8787`). D�
 
 Đóng cửa sổ app chỉ ẩn giao diện; app vẫn chạy nền qua tray. Thoát hẳn từ menu tray khi muốn dừng mọi thứ.
 
-**Settings (app macOS):**
+**Settings (app desktop):**
 
-- **Port** — mặc định `8787`; phải trùng cổng trong extension Chrome.
-- **Public bind** — tắt (khuyến nghị): chỉ máy này kết nối được. Bật: lắng nghe mọi interface (`0.0.0.0`); chỉ dùng trên mạng tin cậy.
+- **Port** — mặc định `9516`; phải trùng cổng trong extension Chrome.
+- **Public bind** — tắt (khuyến nghị): chỉ localhost (`127.0.0.1`). Bật: lắng nghe mọi interface (`0.0.0.0`); chỉ dùng trên mạng tin cậy.
 
 Sau khi đổi port hoặc bind, bấm **Save & Restart** trong Settings.
 
@@ -57,8 +252,8 @@ Sau khi đổi port hoặc bind, bấm **Save & Restart** trong Settings.
    - **Connected** — extension đang nói chuyện với backend.
    - **Disconnected** — backend tắt hoặc host/port sai.
 3. Nếu disconnected:
-   - **Settings** (bánh răng) → **Host** (`127.0.0.1`) và **Port** (trùng app macOS, thường `8787`) → **Save & Reconnect**.
-   - Hoặc bấm **Reconnect** (icon reload) sau khi app macOS báo **Running**.
+   - **Settings** (bánh răng) → **Host** (`127.0.0.1`) và **Port** (trùng app desktop, thường `9516`) → **Save & Reconnect**.
+   - Hoặc bấm **Reconnect** (icon reload) sau khi app desktop báo **Running**.
 
 Panel vẫn mở được khi backend tắt; account và history đồng bộ lại khi kết nối được.
 
@@ -118,22 +313,136 @@ Hiển thị các tin user/assistant gần đây đã lưu khi backend kết n�
 
 ## Quy trình thường dùng
 
-1. Mở **app macOS** → backend **Running**.
+1. Mở **app desktop** → backend **Running**.
 2. Mở Chrome → side panel **Connected**.
 3. **Accounts** → thêm từng profile Gemini (detect từ tab đang mở).
 4. **Open Tab** cho account cần dùng.
 5. **Chat** → chọn account → gửi prompt; xem **History** cho các lượt trước.
 6. **Dashboard** → theo dõi busy khi chạy nhiều account.
 
+## Ví dụ
+
+### Ví dụ 1 — Lần đầu dùng (một tài khoản Gemini)
+
+| Bước | Thao tác |
+|------|----------|
+| 1 | Mở **Extract AI Token** (app desktop) → tray báo **● Running (port 9516)** |
+| 2 | Trong Chrome, mở [gemini.google.com](https://gemini.google.com) và đăng nhập |
+| 3 | Mở side panel **Extract Token** → nhãn **Connected** |
+| 4 | **Accounts** → **Add Account** → **Detect From Active Gemini Tab** → **Create** |
+| 5 | **Open Tab** — extension mở/focus tab Gemini của account |
+| 6 | **Chat** → chọn account → nhập prompt → **Send Prompt** |
+
+### Ví dụ 2 — Công việc và cá nhân (hai profile Google)
+
+Mỗi URL Gemini đã đăng nhập tương ứng một account:
+
+| Nhãn account | URL Gemini (ví dụ) | Cách thêm |
+|--------------|-------------------|-----------|
+| Công việc | `https://gemini.google.com/u/0/app` | Mở URL → Add Account → Detect |
+| Cá nhân | `https://gemini.google.com/u/1/app` | Đổi tài khoản Google → mở `/u/1/app` → Detect lại |
+
+Trong **Chat**, chọn **Công việc** hoặc **Cá nhân** trước khi gửi. **Dashboard** cho biết account nào đang mở tab.
+
+### Ví dụ 3 — Kiểm tra backend đang chạy
+
+```bash
+curl http://127.0.0.1:9516/health
+```
+
+Kỳ vọng: HTTP `200` khi app desktop báo **Running**.
+
+Xem danh sách account (sau khi đã thêm trong extension):
+
+```bash
+curl http://127.0.0.1:9516/v1/accounts
+```
+
+### Ví dụ 4 — Chat từ side panel
+
+1. **Accounts** → **Open Tab** cho account **Công việc**.
+2. **Chat** → chọn **Công việc** → prompt:
+
+   `Liệt kê 3 ưu và 3 nhược điểm của làm việc từ xa dạng bullet.`
+
+3. **Send Prompt** → đọc **Latest response** → **Copy** nếu cần.
+4. Bật **stream** để xem phản hồi từng phần (SSE).
+5. **History** — các lượt user/assistant sau khi gửi thành công.
+
+### Ví dụ 5 — Chat từ script (tương thích OpenAI)
+
+URL backend: `http://127.0.0.1:9516` (đổi port nếu bạn đã chỉnh trong Settings).
+
+**curl (một lần trả lời):**
+
+```bash
+curl -s http://127.0.0.1:9516/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-flash",
+    "stream": false,
+    "messages": [{ "role": "user", "content": "Bây giờ là mấy giờ UTC?" }]
+  }'
+```
+
+Tùy chọn: ghim account cụ thể (ID từ `GET /v1/accounts` hoặc tab Accounts):
+
+```json
+"account_id": "gemini-0"
+```
+
+**Node.js (script có sẵn trong repo):**
+
+```bash
+cd examples/nodejs
+node accounts.mjs
+node chat.mjs "mấy giờ rồi?"
+node chat-stream.mjs "haiku về cà phê"
+
+npm install
+node openai-sdk.mjs "chào bạn"
+STREAM=1 node openai-sdk.mjs "stream 1 fact"
+```
+
+| Biến | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `BASE_URL` | `http://127.0.0.1:9516` | URL backend |
+| `MODEL` | `gemini-flash` | Tên model gửi lên API |
+| `ACCOUNT_ID` | account enabled đầu tiên | Account Gemini dùng cho request |
+| `STREAM` | `0` | Đặt `1` để stream trong `openai-sdk.mjs` |
+
+Chi tiết request/response: [`examples/nodejs/README.md`](examples/nodejs/README.md).
+
+**Python (SDK OpenAI):**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:9516/v1",
+    api_key="not-used",  # backend bỏ qua auth; SDK vẫn cần chuỗi placeholder
+)
+
+reply = client.chat.completions.create(
+    model="gemini-flash",
+    messages=[{"role": "user", "content": "Chào bằng tiếng Việt"}],
+)
+print(reply.choices[0].message.content)
+```
+
+Điều kiện cho ví dụ API: app desktop **Running**, có ít nhất một account **đang bật** trong extension, và tab Gemini tương ứng **đang mở** khi gửi chat.
+
 ## Xử lý sự cố
 
 | Vấn đề | Cách xử lý |
 |--------|------------|
-| Panel báo **Disconnected** | Start/restart backend trong app macOS; khớp host/port trong Settings extension. |
-| Cảnh báo lỗi backend | Đọc thông báo trên panel; mở **Logs** trong app macOS. |
+| Panel báo **Disconnected** | Start/restart backend trong app desktop; khớp host/port trong Settings extension. |
+| Cảnh báo lỗi backend | Đọc thông báo trên panel; mở **Logs** trong app desktop. |
 | Detect account thất bại | Tab đang active phải là trang Gemini; refresh và thử lại. |
 | Gửi prompt lỗi | Mở khóa account, mở tab, đợi giao diện Gemini sẵn sàng. |
-| Port đã được dùng | Đổi port trong **Settings** macOS, lưu, cập nhật cùng port trên extension. |
+| Port đã được dùng | Đổi port trong **Settings** app desktop, lưu, cập nhật cùng port trên extension. |
+| Không thấy tray trên Linux | Kiểm tra system tray của môi trường desktop; khởi động lại app. |
+| Extension không cài được | Dùng Chromium có MV3; cần hỗ trợ side panel (Chrome 114+). |
 | Không có history sau chat | Backend phải **Connected** khi gửi; history lưu trên dịch vụ cục bộ. |
 
 ## Tuyên bố miễn trừ trách nhiệm

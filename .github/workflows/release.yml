@@ -83,6 +83,20 @@ jobs:
           name: macos-backend
           path: macos-backend
 
+      # Standalone backend artifact for users who only want the API binary.
+      - name: Stage standalone backend zip (macOS)
+        run: |
+          mkdir -p out
+          cp macos-backend out/extract-ai-token
+          chmod +x out/extract-ai-token
+          zip -j extract-ai-token-backend-macos.zip out/extract-ai-token
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-only-macos
+          path: extract-ai-token-backend-macos.zip
+          if-no-files-found: error
+
   backend-windows:
     name: Backend (Windows)
     runs-on: windows-latest
@@ -104,6 +118,19 @@ jobs:
           name: windows-backend
           path: backend/target/release/backend.exe
 
+      - name: Stage standalone backend zip (Windows)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path out -Force | Out-Null
+          Copy-Item backend\target\release\backend.exe out\extract-ai-token.exe
+          Compress-Archive -Path out\extract-ai-token.exe -DestinationPath extract-ai-token-backend-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-only-windows
+          path: extract-ai-token-backend-windows.zip
+          if-no-files-found: error
+
   backend-linux:
     name: Backend (Linux)
     runs-on: ubuntu-latest
@@ -124,6 +151,19 @@ jobs:
         with:
           name: linux-backend
           path: backend/target/release/backend
+
+      - name: Stage standalone backend tarball (Linux)
+        run: |
+          mkdir -p out
+          cp backend/target/release/backend out/extract-ai-token
+          chmod +x out/extract-ai-token
+          tar -czf extract-ai-token-backend-linux.tar.gz -C out extract-ai-token
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-only-linux
+          path: extract-ai-token-backend-linux.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────
   # 3. Flutter app – macOS
@@ -289,7 +329,14 @@ jobs:
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [extension, app-macos, app-windows, app-linux]
+    needs:
+      - extension
+      - backend-macos
+      - backend-windows
+      - backend-linux
+      - app-macos
+      - app-windows
+      - app-linux
     steps:
       - uses: actions/checkout@v4
 
@@ -312,4 +359,7 @@ jobs:
             artifacts/app-macos/*
             artifacts/app-windows/*
             artifacts/app-linux/*
+            artifacts/backend-only-macos/*
+            artifacts/backend-only-windows/*
+            artifacts/backend-only-linux/*
             artifacts/extension-chrome/*
