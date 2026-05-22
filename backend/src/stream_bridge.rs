@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    Delta(String),
+    /// `full` is cumulative assistant text from the extension (preferred for assembly).
+    Delta { delta: String, full: Option<String> },
     Done { text: String },
     Error(String),
 }

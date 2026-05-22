@@ -1,5 +1,17 @@
 import { buildGeminiUrl, createAccountId, getBackendConfig, getTabs, removeAccountTab, setAccountTab, setBackendConfig } from "../src/lib/storage";
 import type { ExtensionMessage, ExtensionMessageResponse } from "../src/lib/messages";
+import {
+  isStreamDebugEnabled,
+  printStreamDebugToExtensionConsole,
+  setStreamDebugBackendRelay,
+  setStreamDebugOverride,
+  shouldRelayTabDebugToBackend,
+  STREAM_DEBUG_MESSAGE_TYPE,
+  STREAM_DEBUG_STORAGE_KEY,
+  streamDebugLog,
+  type StreamDebugEntry
+} from "../src/lib/gemini-stream-debug";
+import { ensureGeminiTabScripts } from "../src/lib/gemini-tab-scripts";
 import type { Account, BackendConnectionConfig, BackendConnectionStatus, BusyState, DashboardSummary, ExtensionState, HistoryMessage } from "../src/lib/types";
 
 type WsPayload = Record<string, unknown>;
@@ -96,12 +108,57 @@ class BackendWsClient {
     streamId: string,
     payload: { event: "delta" | "done" | "error"; delta?: string; text?: string; error?: string }
   ): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      streamDebugLog("background", "stream_push_skip", {
+        streamId,
+        event: payload.event,
+        wsOpen: this.ws?.readyState === WebSocket.OPEN
+      });
+      return;
+    }
+    if (payload.event === "delta") {
+      streamDebugLog("background", "stream_push_delta", {
+        streamId,
+        deltaLen: payload.delta?.length ?? 0
+      });
+    } else {
+      streamDebugLog("background", "stream_push", {
+        streamId,
+        event: payload.event,
+        textLen: payload.text?.length ?? 0,
+        error: payload.error
+      });
+    }
     this.ws.send(
       JSON.stringify({
         stream_push: true,
         stream_id: streamId,
         ...payload
+      })
+    );
+  }
+
+  /** Tab/stream debug → backend terminal + GET /v1/debug/tab */
+  pushTabDebug(payload: {
+    ts: number;
+    layer: string;
+    event: string;
+    tabId?: number;
+    accountId?: string;
+    url?: string;
+    detail?: Record<string, unknown>;
+  }): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        debug_push: true,
+        ts: payload.ts,
+        layer: payload.layer,
+        event: payload.event,
+        tab_id: payload.tabId ?? null,
+        account_id: payload.accountId ?? null,
+        url: payload.url ?? null,
+        detail: payload.detail ?? null
       })
     );
   }
@@ -297,14 +354,12 @@ async function detectGeminiRootFromActiveTab(): Promise<GeminiAccountPreview> {
 }
 
 async function sendMessageToGeminiTab(tabId: number, message: any): Promise<any> {
+  await ensureGeminiTabScripts(tabId);
   try {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch (error) {
     if (!isClosedMessageChannelError(error)) throw error;
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content-scripts/content.js"]
-    });
+    await ensureGeminiTabScripts(tabId, { allowReload: true });
     return await chrome.tabs.sendMessage(tabId, message);
   }
 }
@@ -354,6 +409,8 @@ async function ensureGeminiTabWithOptions(accountId: string, options: { activate
           url: existing.url || url,
           updatedAt: new Date().toISOString()
         });
+        await waitForTabReady(existing.id);
+        await ensureGeminiTabScripts(existing.id);
         return existing.id;
       }
     } catch {
@@ -381,6 +438,8 @@ async function ensureGeminiTabWithOptions(accountId: string, options: { activate
       url: reusable.url || url,
       updatedAt: new Date().toISOString()
     });
+    await waitForTabReady(reusable.id);
+    await ensureGeminiTabScripts(reusable.id);
     return reusable.id;
   }
 
@@ -394,6 +453,8 @@ async function ensureGeminiTabWithOptions(accountId: string, options: { activate
     url,
     updatedAt: new Date().toISOString()
   });
+  await waitForTabReady(tab.id, 20_000);
+  await ensureGeminiTabScripts(tab.id);
   return tab.id;
 }
 
@@ -442,6 +503,10 @@ async function recreateAccountTab(accountId: string): Promise<number> {
 async function ensureResponsiveAccountTab(accountId: string): Promise<number> {
   let tabId = await ensureGeminiTabWithOptions(accountId, { activate: false });
   await waitForTabReady(tabId);
+  const scripts = await ensureGeminiTabScripts(tabId);
+  if (!scripts.intercept?.fetchPatched) {
+    streamDebugLog("background", "warn_no_intercept_before_send", { tabId });
+  }
   if (await pingGeminiTab(tabId, 2500)) return tabId;
 
   // First attempt unresponsive — recycle the tab once.
@@ -691,11 +756,15 @@ async function handleBackendControllerRequest(type: string, payload: WsPayload):
     throw new Error(`Unsupported controller action: ${action}`);
   }
   const result = await sendPrompt({ accountId, model, prompt });
-  return {
+  const out: Record<string, string> = {
     account_id: result.accountId,
     model: result.model,
     response_text: result.responseText
   };
+  if (typeof result.responseHtml === "string" && result.responseHtml.trim()) {
+    out.response_html = result.responseHtml;
+  }
+  return out;
 }
 
 async function sendPromptViaOpenAiApi(payload: {
@@ -870,7 +939,89 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
   }
 }
 
+const backgroundDebugBuffer: StreamDebugEntry[] = [];
+const BACKGROUND_DEBUG_MAX = 400;
+
+function refreshStreamDebugFlag(): void {
+  chrome.storage.local.get(STREAM_DEBUG_STORAGE_KEY, (stored) => {
+    const on = stored[STREAM_DEBUG_STORAGE_KEY] === "1";
+    setStreamDebugOverride(on);
+    if (on) {
+      console.info(
+        "[ExtractToken:background] stream debug ON — log intercept/content sẽ hiện ở console Extension này"
+      );
+    }
+  });
+}
+
+async function resolveAccountIdForTab(tabId?: number): Promise<string | undefined> {
+  if (tabId === undefined) return undefined;
+  const tabs = await getTabs();
+  return tabs.find((t) => t.tabId === tabId)?.accountId;
+}
+
+async function ingestStreamDebugFromTab(
+  entry: StreamDebugEntry,
+  sender?: chrome.runtime.MessageSender
+): Promise<void> {
+  const relayBackend = shouldRelayTabDebugToBackend(entry.event);
+  if (!isStreamDebugEnabled() && !relayBackend) return;
+
+  backgroundDebugBuffer.push(entry);
+  if (backgroundDebugBuffer.length > BACKGROUND_DEBUG_MAX) backgroundDebugBuffer.shift();
+  printStreamDebugToExtensionConsole(entry);
+
+  if (!relayBackend) return;
+
+  const tabId = sender?.tab?.id;
+  let url: string | undefined;
+  if (tabId !== undefined) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      url = tab.url;
+    } catch {
+      // ignore
+    }
+  }
+  const accountId = await resolveAccountIdForTab(tabId);
+  backend.pushTabDebug({
+    ts: entry.ts,
+    layer: entry.layer,
+    event: entry.event,
+    tabId,
+    accountId,
+    url,
+    detail: entry.detail
+  });
+}
+
 export default defineBackground(() => {
+  setStreamDebugBackendRelay((entry, ctx) => {
+    if (!shouldRelayTabDebugToBackend(entry.event)) return;
+    backend.pushTabDebug({
+      ts: entry.ts,
+      layer: entry.layer,
+      event: entry.event,
+      tabId: ctx?.tabId,
+      accountId: ctx?.accountId,
+      url: ctx?.url,
+      detail: entry.detail
+    });
+  });
+
+  refreshStreamDebugFlag();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && STREAM_DEBUG_STORAGE_KEY in changes) {
+      refreshStreamDebugFlag();
+    }
+  });
+
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status !== "complete") return;
+    if (!tab.url?.includes("gemini.google.com")) return;
+    void ensureGeminiTabScripts(tabId, { allowReload: false }).catch(() => {});
+  });
+
   if (chrome.sidePanel?.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
       // Ignore if unsupported in current browser build.
@@ -880,6 +1031,24 @@ export default defineBackground(() => {
   backend.init().catch(() => {
     // keep retry loop managed by the client
   });
+
+  (globalThis as typeof globalThis & {
+    __extractTokenStreamDebugBg?: {
+      dump: () => void;
+      getLog: () => StreamDebugEntry[];
+      help: () => void;
+    };
+  }).__extractTokenStreamDebugBg = {
+    dump: () => console.table(backgroundDebugBuffer),
+    getLog: () => backgroundDebugBuffer.slice(),
+    help: () => {
+      console.info(`
+[ExtractToken:background] stream debug
+  Bật: tab Gemini → localStorage.setItem('extract-token-stream-debug','1'); reload
+  __extractTokenStreamDebugBg.dump()
+      `.trim());
+    }
+  };
 
   chrome.runtime.onInstalled.addListener(async () => {
     if (chrome.sidePanel?.setPanelBehavior) {
@@ -903,9 +1072,10 @@ export default defineBackground(() => {
     }
   });
 
-  chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const raw = message as ExtensionMessage & {
       type?: string;
+      entry?: StreamDebugEntry;
       payload?: {
         streamId?: string;
         event?: "delta" | "done" | "error";
@@ -914,6 +1084,12 @@ export default defineBackground(() => {
         error?: string;
       };
     };
+
+    if (raw?.type === STREAM_DEBUG_MESSAGE_TYPE && raw.entry) {
+      void ingestStreamDebugFromTab(raw.entry, sender).then(() => sendResponse({ ok: true }));
+      return true;
+    }
+
     if (raw?.type === "gemini.stream.push") {
       const streamId = String(raw.payload?.streamId || "");
       const event = raw.payload?.event;

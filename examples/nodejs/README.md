@@ -73,9 +73,17 @@ Content-Type: application/json
   "account_id": "gemini-0",        // optional, pin to specific account
   "messages": [
     { "role": "user", "content": "hi" }
-  ]
+  ],
+  "format": "md"
 }
 ```
+
+Optional `format`:
+
+| Value | Default when | Effect |
+|---|---|---|
+| `md` | `stream: false` | HTML → markdown-like text (`sanitize_model_output`) |
+| `raw` | `stream: true` | Passthrough deltas/text (live stream from Gemini hook) |
 
 `messages[].content` may be a string, `null`, or a multipart array
 (`[{ "type": "text", "text": "..." }]`) as sent by the OpenAI SDK.

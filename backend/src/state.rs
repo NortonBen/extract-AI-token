@@ -1,5 +1,6 @@
 use crate::models::{BusyState, Provider};
 use crate::stream_bridge::{StreamBridge, StreamEvent};
+use crate::tab_debug::{TabDebugEntry, TabDebugLog};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
@@ -28,6 +29,7 @@ pub struct AppState {
     pub busy: Arc<Mutex<BusyState>>,
     pub ws_bridge: Arc<AsyncMutex<WsBridge>>,
     pub stream_bridge: Arc<StreamBridge>,
+    pub tab_debug: TabDebugLog,
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +113,16 @@ impl AppState {
             busy: Arc::new(Mutex::new(BusyState::default())),
             ws_bridge: Arc::new(AsyncMutex::new(WsBridge::default())),
             stream_bridge: Arc::new(StreamBridge::default()),
+            tab_debug: TabDebugLog::default(),
         })
+    }
+
+    pub fn push_tab_debug(&self, entry: TabDebugEntry) {
+        self.tab_debug.push(entry);
+    }
+
+    pub fn list_tab_debug(&self, limit: usize) -> Vec<TabDebugEntry> {
+        self.tab_debug.list(limit)
     }
 
     pub fn open_gemini_stream(&self, stream_id: String) -> mpsc::UnboundedReceiver<StreamEvent> {

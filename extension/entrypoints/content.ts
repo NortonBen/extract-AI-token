@@ -1,3 +1,11 @@
+import {
+  installStreamDebugGlobal,
+  isStreamDebugEnabled,
+  streamDebugLog,
+  STREAM_CONTROL_EVENT,
+  STREAM_DEBUG_STORAGE_KEY
+} from "../src/lib/gemini-stream-debug";
+
 const SEND_SELECTORS = [
   "gem-icon-button.send-button button[aria-label='Gửi tin nhắn']",
   "gem-icon-button.send-button button[aria-label='Send message']",
@@ -259,6 +267,21 @@ function latestResponseText(): string {
   return "";
 }
 
+/** HTML for backend `format=md` (non-stream), like old readLastHTML + bash extract. */
+function latestResponseHtml(): string {
+  for (const selector of RESPONSE_SELECTORS) {
+    const list = document.querySelectorAll(selector);
+    if (list.length === 0) continue;
+    const last = list.item(list.length - 1);
+    const inner = pickInnerResponseNode(last);
+    const clone = inner.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll(NOISE_SELECTORS).forEach((w) => w.remove());
+    const html = (clone.innerHTML || "").trim();
+    if (html) return html;
+  }
+  return "";
+}
+
 function normalizeGeminiRootFromLocation(href: string): { pageRoot: string; userIndex: number | null } {
   const url = new URL(href);
   const m = url.pathname.match(/^\/u\/(\d+)(?:\/|$)/);
@@ -437,6 +460,8 @@ interface StreamState {
   status: string;
   done: boolean;
   errored: boolean;
+  /** True once StreamGenerate hook fired (old routeStarted). */
+  routeStarted: boolean;
   doneResolvers: Array<(text: string) => void>;
 }
 
@@ -467,8 +492,30 @@ const streamState: StreamState = {
   status: "",
   done: false,
   errored: false,
+  routeStarted: false,
   doneResolvers: []
 };
+
+/** Sync arm/disarm via DOM event (MAIN world listens). postMessage arm was async → race with StreamGenerate. */
+function armStreamInterceptor(requestId: string): void {
+  document.dispatchEvent(
+    new CustomEvent(STREAM_CONTROL_EVENT, {
+      detail: { action: "arm", requestId },
+      bubbles: true
+    })
+  );
+  streamDebugLog("content", "arm_sync", { requestId });
+}
+
+function disarmStreamInterceptor(): void {
+  document.dispatchEvent(
+    new CustomEvent(STREAM_CONTROL_EVENT, {
+      detail: { action: "disarm" },
+      bubbles: true
+    })
+  );
+  streamDebugLog("content", "disarm_sync");
+}
 
 function resetStreamState(): void {
   streamState.requestId = null;
@@ -476,6 +523,7 @@ function resetStreamState(): void {
   streamState.status = "";
   streamState.done = false;
   streamState.errored = false;
+  streamState.routeStarted = false;
   // Note: we keep doneResolvers because callers may have already queued
   // a wait before reset (e.g. when resetting at the very start of send).
 }
@@ -495,7 +543,19 @@ function fireDoneResolvers(text: string): void {
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
-  if (!data || (data as any).__geminiStream !== true) return;
+  if (!data) return;
+
+  if ((data as { __geminiStreamDebugRelay?: boolean }).__geminiStreamDebugRelay === true) {
+    const relay = data as {
+      layer?: string;
+      event?: string;
+      detail?: Record<string, unknown>;
+    };
+    streamDebugLog(String(relay.layer || "intercept"), String(relay.event || "debug"), relay.detail);
+    return;
+  }
+
+  if ((data as { __geminiStream?: boolean }).__geminiStream !== true) return;
   const payload = data as {
     type: string;
     requestId: string;
@@ -506,19 +566,32 @@ window.addEventListener("message", (event) => {
   };
 
   switch (payload.type) {
+    case "armed":
+      streamDebugLog("content", "bridge_armed", { requestId: payload.requestId });
+      break;
     case "start":
+      streamDebugLog("content", "bridge_start", { requestId: payload.requestId });
       streamState.requestId = payload.requestId;
       streamState.text = "";
       streamState.status = "";
       streamState.done = false;
       streamState.errored = false;
+      streamState.routeStarted = true;
       break;
     case "delta": {
+      streamState.routeStarted = true;
       streamState.requestId = streamState.requestId || payload.requestId;
       const fullText = typeof payload.text === "string" ? payload.text : streamState.text;
       streamState.text = fullText;
       const delta = typeof payload.delta === "string" ? payload.delta : "";
-      if (delta) emitStreamDelta(delta, fullText);
+      if (delta) {
+        streamDebugLog("content", "bridge_delta", {
+          requestId: payload.requestId,
+          deltaLen: delta.length,
+          fullLen: fullText.length
+        });
+        emitStreamDelta(delta, fullText);
+      }
       break;
     }
     case "status":
@@ -532,6 +605,10 @@ window.addEventListener("message", (event) => {
     case "done":
       if (typeof payload.text === "string" && payload.text) streamState.text = payload.text;
       streamState.done = true;
+      streamDebugLog("content", "bridge_done", {
+        requestId: payload.requestId,
+        textLen: streamState.text.length
+      });
       fireDoneResolvers(streamState.text);
       break;
   }
@@ -563,50 +640,78 @@ function waitForStreamDone(timeoutMs: number): Promise<string | null> {
 
 async function sendGeminiPrompt(
   prompt: string,
-  options?: { onDelta?: (delta: string, fullText: string) => void }
+  options?: {
+    onDelta?: (delta: string, fullText: string) => void;
+    /** Backend stream_id — arms MAIN-world interceptor (old activeCh). */
+    streamId?: string;
+  }
 ): Promise<{ responseText: string }> {
   const trimmed = prompt.trim();
   if (!trimmed) throw new Error("Prompt is empty");
   resetStreamState();
+  const armId = options?.streamId || `req-${Date.now()}`;
+  armStreamInterceptor(armId);
   const unsubscribeDelta = options?.onDelta ? subscribeStreamDeltas(options.onDelta) : () => {};
   const prevCount = messageContentCount();
-  const injected = setComposerPrompt(trimmed);
-  if (!injected) throw new Error("Gemini composer not found");
-
-  await sleep(150);
-  if (!clickSendButton()) pressEnterFallback();
-  await waitForPromptSubmission(prevCount, trimmed);
-
-  // Race the stream interceptor against the DOM-stable detector. The stream
-  // path is preferred when Gemini routes through fetch(StreamGenerate); the
-  // DOM path is a safety net for cases the patch missed (XHR, future format
-  // change, etc).
-  const streamFirst = waitForStreamDone(180_000).then((text) =>
-    text ? { source: "stream", text } : null
-  );
-  const domFirst = waitForResponseStable(prevCount).then((text) => ({
-    source: "dom",
-    text
-  }));
-
-  let winner: { source: string; text: string } | null = null;
   try {
-    winner = await Promise.any([
-      streamFirst.then((r) => (r ? r : Promise.reject(new Error("no stream")))),
-      domFirst
-    ]);
-  } catch (err) {
-    if (err instanceof AggregateError) {
-      throw err.errors[err.errors.length - 1] || new Error("No response from Gemini");
+    const injected = setComposerPrompt(trimmed);
+    if (!injected) throw new Error("Gemini composer not found");
+
+    await sleep(150);
+    if (!clickSendButton()) pressEnterFallback();
+    await waitForPromptSubmission(prevCount, trimmed);
+
+    // Race stream hook vs DOM. Old: 12s DOM fallback if Route never started.
+    const streamFirst = waitForStreamDone(180_000).then((text) =>
+      text ? { source: "stream", text } : null
+    );
+    const domFirst = waitForResponseStable(prevCount).then((text) => ({
+      source: "dom",
+      text
+    }));
+    const routeTimeoutFallback = new Promise<{ source: string; text: string } | null>((resolve) => {
+      setTimeout(async () => {
+        if (streamState.routeStarted) {
+          resolve(null);
+          return;
+        }
+        try {
+          const text = await waitForResponseStable(prevCount);
+          resolve(text.trim() ? { source: "dom-fallback", text } : null);
+        } catch {
+          resolve(null);
+        }
+      }, 12_000);
+    });
+
+    let winner: { source: string; text: string } | null = null;
+    try {
+      winner = await Promise.any([
+        streamFirst.then((r) => (r ? r : Promise.reject(new Error("no stream")))),
+        domFirst,
+        routeTimeoutFallback.then((r) => (r ? r : Promise.reject(new Error("no route fallback"))))
+      ]);
+    } catch (err) {
+      if (err instanceof AggregateError) {
+        throw err.errors[err.errors.length - 1] || new Error("No response from Gemini");
+      }
+      throw err;
     }
-    throw err;
+    if (!winner || !winner.text.trim()) {
+      throw new Error("Gemini returned empty response");
+    }
+    streamDebugLog("content", "send_winner", {
+      source: winner.source,
+      routeStarted: streamState.routeStarted,
+      textLen: winner.text.length
+    });
+    const responseHtml =
+      winner.source === "stream" ? "" : latestResponseHtml();
+    return { responseText: winner.text, responseHtml };
   } finally {
     unsubscribeDelta();
+    disarmStreamInterceptor();
   }
-  if (!winner || !winner.text.trim()) {
-    throw new Error("Gemini returned empty response");
-  }
-  return { responseText: winner.text };
 }
 
 async function executeGeminiCommand(payload: {
@@ -632,6 +737,15 @@ async function executeGeminiCommand(payload: {
 export default defineContentScript({
   matches: ["https://gemini.google.com/*"],
   main() {
+    const w = window as Window & { __extractTokenContentInit?: boolean };
+    if (w.__extractTokenContentInit) return;
+    w.__extractTokenContentInit = true;
+
+    installStreamDebugGlobal("content");
+    if (isStreamDebugEnabled()) {
+      chrome.storage.local.set({ [STREAM_DEBUG_STORAGE_KEY]: "1" }).catch(() => {});
+    }
+
     chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
       if (message?.type === "gemini.chat.send") {
         const prompt = String(message.payload?.prompt || "");
@@ -648,16 +762,16 @@ export default defineContentScript({
       if (message?.type === "gemini.chat.send_stream") {
         const prompt = String(message.payload?.prompt || "");
         const streamId = String(message.payload?.streamId || "");
-        const onDelta = (delta: string, _full: string) => {
+        const onDelta = (delta: string, full: string) => {
           if (!streamId) return;
           chrome.runtime
             .sendMessage({
               type: "gemini.stream.push",
-              payload: { streamId, event: "delta", delta }
+              payload: { streamId, event: "delta", delta, text: full }
             })
             .catch(() => {});
         };
-        sendGeminiPrompt(prompt, { onDelta })
+        sendGeminiPrompt(prompt, { onDelta, streamId })
           .then((result) => {
             if (streamId) {
               chrome.runtime

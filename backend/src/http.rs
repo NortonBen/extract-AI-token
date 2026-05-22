@@ -19,7 +19,8 @@ use crate::models::{
 };
 use crate::state::{AccountRow, AppState, HistoryRow, ModelRow, WsRpcResponse};
 use crate::stream_bridge::StreamEvent;
-use crate::sanitize::sanitize_model_output;
+use crate::tab_debug::entry_from_ws_value;
+use crate::sanitize::{apply_output_format, resolve_output_format, OutputFormat};
 use crate::tools::{
     build_prompt, looks_like_tool_calls_json, openai_tool_message, resolve_tool_calls_relaxed,
     ChatMessage, ToolDefinition,
@@ -71,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/busy", get(get_busy).post(set_busy))
         .route("/v1/dashboard", get(get_dashboard))
         .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/v1/debug/tab", get(list_tab_debug))
         .with_state(state)
 }
 
@@ -114,6 +116,10 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                 };
 
                 if let Ok(value) = serde_json::from_str::<Value>(&message) {
+                    if value.get("debug_push").and_then(|x| x.as_bool()) == Some(true) {
+                        handle_debug_push(&state, &value);
+                        continue;
+                    }
                     if value.get("stream_push").and_then(|x| x.as_bool()) == Some(true) {
                         handle_stream_push(&state, &value);
                         continue;
@@ -166,6 +172,34 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
     state.clear_ws_sender().await;
 }
 
+fn handle_debug_push(state: &AppState, value: &Value) {
+    if let Some(entry) = entry_from_ws_value(value) {
+        state.push_tab_debug(entry);
+    }
+}
+
+async fn list_tab_debug(
+    State(state): State<AppState>,
+    Query(query): Query<TabDebugQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500) as usize;
+    let entries = state.list_tab_debug(limit);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "object": "tab_debug_log",
+            "count": entries.len(),
+            "entries": entries
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct TabDebugQuery {
+    limit: Option<i64>,
+}
+
 fn handle_stream_push(state: &AppState, value: &Value) {
     let stream_id = value
         .get("stream_id")
@@ -180,10 +214,21 @@ fn handle_stream_push(state: &AppState, value: &Value) {
         .unwrap_or_default();
     match event {
         "delta" => {
-            if let Some(delta) = value.get("delta").and_then(|x| x.as_str()) {
-                if !delta.is_empty() {
-                    let _ = state.push_gemini_stream(stream_id, StreamEvent::Delta(delta.to_string()));
-                }
+            let delta = value
+                .get("delta")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let full = value
+                .get("text")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            if !delta.is_empty() || full.is_some() {
+                let _ = state.push_gemini_stream(
+                    stream_id,
+                    StreamEvent::Delta { delta, full },
+                );
             }
         }
         "done" => {
@@ -614,6 +659,8 @@ struct OpenAiChatCompletionRequest {
     #[serde(default)]
     tools: Vec<ToolDefinition>,
     stream: Option<bool>,
+    /// `raw` (default when stream=true) or `md` (default when stream=false).
+    format: Option<String>,
     account_id: Option<String>,
 }
 
@@ -660,6 +707,7 @@ async fn openai_chat_completions(
         .unwrap_or_else(|| "google/gemini-flash".to_string());
 
     let stream = payload.stream.unwrap_or(false);
+    let output_format = resolve_output_format(stream, payload.format.as_deref());
 
     if stream {
         let stream_id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
@@ -687,7 +735,15 @@ async fn openai_chat_completions(
                 let _ = st.push_gemini_stream(&sid, StreamEvent::Error(err.to_string()));
             }
         });
-        return sse_gemini_live(state.clone(), model, stream_id, rx, payload.tools).into_response();
+        return sse_gemini_live(
+            state.clone(),
+            model,
+            stream_id,
+            rx,
+            payload.tools,
+            output_format,
+        )
+        .into_response();
     }
 
     let call = state
@@ -719,17 +775,27 @@ async fn openai_chat_completions(
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
+    let raw_html = data
+        .get("response_html")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
 
     // Parse tool_calls from raw text before markdown/HTML sanitization.
     let tool_calls = resolve_tool_calls_relaxed(&raw_response, &payload.tools);
     let looks_like_tools = looks_like_tool_calls_json(&raw_response);
+    let content_source = if output_format == OutputFormat::Md && !raw_html.trim().is_empty() {
+        raw_html.as_str()
+    } else {
+        raw_response.as_str()
+    };
     let mut response_text = if tool_calls.is_empty() {
-        sanitize_model_output(&raw_response)
+        apply_output_format(content_source, output_format)
     } else {
         String::new()
     };
-    if tool_calls.is_empty() && response_text.trim().is_empty() && !raw_response.trim().is_empty() {
-        response_text = raw_response.trim().to_string();
+    if tool_calls.is_empty() && response_text.trim().is_empty() && !content_source.trim().is_empty() {
+        response_text = apply_output_format(content_source, output_format);
     }
     if !payload.tools.is_empty() && tool_calls.is_empty() && looks_like_tools {
         tracing::warn!(
@@ -787,7 +853,9 @@ fn sse_gemini_live(
     stream_id: String,
     mut rx: mpsc::UnboundedReceiver<StreamEvent>,
     tools: Vec<ToolDefinition>,
+    output_format: OutputFormat,
 ) -> impl IntoResponse {
+    let has_tools = !tools.is_empty();
     let (tx, rx_sse) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
     let created = Utc::now().timestamp();
 
@@ -809,13 +877,34 @@ fn sse_gemini_live(
     tokio::spawn(async move {
         let mut full_text = String::new();
         let mut stream_error: Option<String> = None;
-        let mut sent_delta = false;
+        /// True only when a content or tool_calls chunk was sent to the client.
+        let mut sent_sse = false;
 
         while let Some(evt) = rx.recv().await {
             match evt {
-                StreamEvent::Delta(delta) => {
-                    sent_delta = true;
-                    full_text.push_str(&delta);
+                StreamEvent::Delta { delta, full } => {
+                    if let Some(snap) = full {
+                        if snap.len() > full_text.len() {
+                            full_text = snap;
+                        }
+                    } else if !delta.is_empty() {
+                        full_text.push_str(&delta);
+                    }
+                    // Old handleStreamChat: buffer text when tools defined (avoid leaking tool JSON).
+                    if has_tools {
+                        continue;
+                    }
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    let piece = if output_format == OutputFormat::Raw {
+                        delta.clone()
+                    } else {
+                        apply_output_format(&delta, output_format)
+                    };
+                    if piece.is_empty() {
+                        continue;
+                    }
                     let event = serde_json::json!({
                         "id": id_task,
                         "object": "chat.completion.chunk",
@@ -823,16 +912,17 @@ fn sse_gemini_live(
                         "model": model_task,
                         "choices": [{
                             "index": 0,
-                            "delta": { "content": delta },
+                            "delta": { "content": piece },
                             "finish_reason": null
                         }]
                     });
                     if tx.send(Ok(Event::default().data(event.to_string()))).is_err() {
                         return;
                     }
+                    sent_sse = true;
                 }
                 StreamEvent::Done { text } => {
-                    if !text.is_empty() {
+                    if !text.is_empty() && text.len() >= full_text.len() {
                         full_text = text;
                     }
                     break;
@@ -863,12 +953,19 @@ fn sse_gemini_live(
 
         let raw = full_text.clone();
         let tool_calls = resolve_tool_calls_relaxed(&raw, &tools);
+        let looks_like_tools = looks_like_tool_calls_json(&raw);
+        if has_tools && tool_calls.is_empty() && looks_like_tools {
+            tracing::warn!(
+                "stream: tools requested but tool_calls extraction failed; response_prefix={}",
+                raw.chars().take(400).collect::<String>()
+            );
+        }
         let content_text = if tool_calls.is_empty() {
-            let sanitized = sanitize_model_output(&raw);
-            if sanitized.trim().is_empty() && !raw.trim().is_empty() {
+            let formatted = apply_output_format(&raw, output_format);
+            if formatted.trim().is_empty() && !raw.trim().is_empty() {
                 raw.trim().to_string()
             } else {
-                sanitized
+                formatted
             }
         } else {
             String::new()
@@ -903,7 +1000,9 @@ fn sse_gemini_live(
                         "finish_reason": null
                     }]
                 });
-                let _ = tx.send(Ok(Event::default().data(chunk_a.to_string())));
+                if tx.send(Ok(Event::default().data(chunk_a.to_string()))).is_ok() {
+                    sent_sse = true;
+                }
 
                 let chunk_b = serde_json::json!({
                     "id": id_task,
@@ -925,8 +1024,8 @@ fn sse_gemini_live(
                 });
                 let _ = tx.send(Ok(Event::default().data(chunk_b.to_string())));
             }
-        } else if !sent_delta && !content_text.is_empty() {
-            // DOM fallback: no StreamGenerate deltas — emit full text once.
+        } else if !sent_sse && !content_text.is_empty() {
+            // Tools buffer or DOM fallback: emit accumulated text once (old handleStreamChat).
             let event = serde_json::json!({
                 "id": id_task,
                 "object": "chat.completion.chunk",
@@ -939,6 +1038,28 @@ fn sse_gemini_live(
                 }]
             });
             let _ = tx.send(Ok(Event::default().data(event.to_string())));
+            sent_sse = true;
+        } else if !sent_sse && !raw.trim().is_empty() {
+            // Last resort: model text present but formatting/tools path produced no SSE yet.
+            let fallback = raw.trim().to_string();
+            let event = serde_json::json!({
+                "id": id_task,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_task,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "content": fallback },
+                    "finish_reason": null
+                }]
+            });
+            tracing::warn!(
+                "stream: emitting raw fallback content (len={}) stream_id={}",
+                fallback.len(),
+                id_task
+            );
+            let _ = tx.send(Ok(Event::default().data(event.to_string())));
+            sent_sse = true;
         }
 
         state.close_gemini_stream(&id_task);

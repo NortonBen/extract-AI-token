@@ -3,6 +3,7 @@ mod models;
 mod sanitize;
 mod state;
 mod stream_bridge;
+mod tab_debug;
 mod tools;
 
 use std::env;
@@ -20,7 +21,8 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,tab_debug=info")),
         )
         .init();
 
@@ -42,6 +44,9 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(socket_addr).await?;
     info!("backend listening on {}", socket_addr);
     info!("sqlite path: {}", db_path);
+    eprintln!(
+        "[tab_debug] extension tab/stream debug → in ra console này (WS debug_push); xem thêm GET /v1/debug/tab"
+    );
 
     axum::serve(listener, app).await?;
     Ok(())

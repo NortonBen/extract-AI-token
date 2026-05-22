@@ -2,6 +2,37 @@
 
 use crate::tools::looks_like_tool_calls_json;
 
+/// Response shaping for `/v1/chat/completions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Passthrough text from Gemini / stream hook (no HTML→markdown).
+    Raw,
+    /// HTML → markdown-like text (non-stream default, like old `SanitizeModelOutput`).
+    Md,
+}
+
+/// Resolve `format` query/body field. Defaults: `stream=true` → raw, `stream=false` → md.
+pub fn resolve_output_format(stream: bool, format: Option<&str>) -> OutputFormat {
+    match format.map(str::trim).map(|s| s.to_lowercase()) {
+        Some(f) if f == "raw" => OutputFormat::Raw,
+        Some(f) if f == "md" => OutputFormat::Md,
+        _ if stream => OutputFormat::Raw,
+        _ => OutputFormat::Md,
+    }
+}
+
+/// Apply output format after tool_calls were parsed from raw text.
+pub fn apply_output_format(text: &str, format: OutputFormat) -> String {
+    let t = text.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    match format {
+        OutputFormat::Raw => t.to_string(),
+        OutputFormat::Md => sanitize_model_output(t),
+    }
+}
+
 /// Normalize UTF-8, unwrap JSON code fences when appropriate, convert HTML → markdown-like text.
 pub fn sanitize_model_output(s: &str) -> String {
     let mut s = s.to_string();
@@ -193,6 +224,29 @@ mod tests {
     fn keep_markdown_fence() {
         let input = "```md\n# Tieu de\n- item 1\n```";
         assert_eq!(sanitize_model_output(input), input);
+    }
+
+    #[test]
+    fn resolve_format_defaults() {
+        assert_eq!(
+            resolve_output_format(true, None),
+            OutputFormat::Raw
+        );
+        assert_eq!(
+            resolve_output_format(false, None),
+            OutputFormat::Md
+        );
+        assert_eq!(
+            resolve_output_format(false, Some("raw")),
+            OutputFormat::Raw
+        );
+    }
+
+    #[test]
+    fn apply_raw_skips_html_conversion() {
+        let html = "<p><b>hi</b></p>";
+        assert_eq!(apply_output_format(html, OutputFormat::Raw), html);
+        assert!(apply_output_format(html, OutputFormat::Md).contains("**hi**"));
     }
 
     #[test]

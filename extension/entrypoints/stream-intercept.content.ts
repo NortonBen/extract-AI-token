@@ -1,190 +1,308 @@
 /**
- * Gemini stream interceptor.
+ * Gemini stream interceptor (MAIN world, document_start).
  *
- * Runs in the page's MAIN world at document_start so it can override
- * window.fetch BEFORE Gemini's app code captures the original reference.
+ * Mirrors old/ai-browser-token Playwright StreamGenerate route + gemini_parser.go:
+ * - armed ⇔ activeCh (sync CustomEvent from content.ts)
+ * - fetch: tee() pass-through to app (like route.Fulfill body)
+ * - XHR: progressive responseText (like bufio.Scanner lines on resp.Body)
+ * - Parser: chunkSplitter + BashProcessChunk + ParseStreamChunk cumulative delta
  *
- * When a request to a *StreamGenerate* endpoint is detected, the response
- * body is teed: one branch is returned to Gemini's app code unchanged, the
- * other is consumed here to parse the batchexecute frames and dispatch
- * structured events via window.postMessage.
- *
- * The (isolated-world) content script in content.ts listens for these
- * messages and forwards them to the background service worker.
- *
- * Mirrors old/ai-browser-token/internal/infrastructure/chatrunner/parser/gemini_parser.go.
+ * Debug: localStorage `extract-token-stream-debug` = `1` — see docs/STREAM_INTERCEPT_DEBUG.md
  */
 
-interface GeminiStreamEvent {
-  text: string;
-  status: string;
-  isDone: boolean;
-  conversationId: string;
-  responseId: string;
+import {
+  emitInterceptDebug,
+  installStreamDebugGlobal,
+  isStreamDebugEnabled,
+  STREAM_CONTROL_EVENT,
+  truncateUrl
+} from "../src/lib/gemini-stream-debug";
+import {
+  computeDelta,
+  feedStreamBuffer,
+  parseStreamBody,
+  stripGoogleStreamPrefix,
+  type GeminiStreamEvent
+} from "../src/lib/gemini-stream-parser";
+import { isGeminiStreamGenerateUrl, normalizeGeminiRequestUrl } from "../src/lib/gemini-stream-url";
+
+function dbg(event: string, detail?: Record<string, unknown>): void {
+  emitInterceptDebug(event, detail);
 }
 
-function parseGeminiChunk(chunk: string): GeminiStreamEvent | null {
-  let outer: unknown;
-  try {
-    outer = JSON.parse(chunk);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(outer)) return null;
-
-  const event: GeminiStreamEvent = {
-    text: "",
-    status: "",
-    isDone: false,
-    conversationId: "",
-    responseId: ""
-  };
-  let hasMeaningfulData = false;
-
-  for (const packet of outer as unknown[][]) {
-    if (!Array.isArray(packet) || packet.length === 0) continue;
-    const type = packet[0];
-    if (type === "e") {
-      event.isDone = true;
-      hasMeaningfulData = true;
-      continue;
-    }
-    if (type !== "wrb.fr") continue;
-    if (packet.length < 3 || typeof packet[2] !== "string" || !packet[2]) continue;
-
-    let inner: unknown;
-    try {
-      inner = JSON.parse(packet[2] as string);
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(inner)) continue;
-
-    // Conversation ID & Response ID
-    if (Array.isArray(inner[1]) && (inner[1] as unknown[]).length >= 2) {
-      const ids = inner[1] as unknown[];
-      if (typeof ids[0] === "string") event.conversationId = ids[0];
-      if (typeof ids[1] === "string") event.responseId = ids[1];
-    }
-
-    // Status (inner[2]["7"][5][0])
-    const meta = inner[2];
-    if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-      const obj7 = (meta as Record<string, unknown>)["7"];
-      if (Array.isArray(obj7) && obj7.length > 5 && Array.isArray(obj7[5])) {
-        const statusArr = obj7[5] as unknown[];
-        if (typeof statusArr[0] === "string") {
-          event.status = statusArr[0];
-          hasMeaningfulData = true;
-        }
-      }
-    }
-
-    // Text (inner[4][0][1][0])
-    if (Array.isArray(inner[4]) && (inner[4] as unknown[]).length > 0) {
-      const a0 = (inner[4] as unknown[])[0];
-      if (Array.isArray(a0) && a0.length > 1) {
-        const a01 = a0[1];
-        if (Array.isArray(a01) && a01.length > 0 && typeof a01[0] === "string") {
-          event.text = a01[0];
-          hasMeaningfulData = true;
-        }
-      }
-    }
-  }
-
-  return hasMeaningfulData || event.isDone ? event : null;
+interface ActiveSession {
+  requestId: string;
+  prevText: string;
+  routeStarted: boolean;
+  streamDone: boolean;
 }
 
 function emit(payload: Record<string, unknown>): void {
   try {
     window.postMessage({ __geminiStream: true, ...payload }, "*");
   } catch {
-    // postMessage cannot throw under normal conditions, but keep it safe
+    // ignore
   }
 }
 
+function newRequestId(): string {
+  return `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+let activeSession: ActiveSession | null = null;
+
+function isArmed(): boolean {
+  return activeSession !== null;
+}
+
+function armSession(requestId?: string): string {
+  const id = requestId || newRequestId();
+  activeSession = { requestId: id, prevText: "", routeStarted: false, streamDone: false };
+  dbg("arm", { requestId: id });
+  return id;
+}
+
+function disarmSession(): void {
+  dbg("disarm", {
+    hadSession: activeSession !== null,
+    routeStarted: activeSession?.routeStarted ?? false
+  });
+  activeSession = null;
+}
+
+function markRouteStarted(): void {
+  if (activeSession) activeSession.routeStarted = true;
+}
+
+/** Emit delta/done from a parsed event (cumulative text → delta like old ParseStreamChunk). */
+function emitParsedEvent(session: ActiveSession, evt: GeminiStreamEvent): void {
+  markRouteStarted();
+  const { requestId } = session;
+
+  if (evt.status) {
+    emit({ type: "status", requestId, status: evt.status });
+  }
+
+  if (evt.text) {
+    const { delta, fullText } = computeDelta(session.prevText, evt.text);
+    session.prevText = fullText;
+    if (delta) {
+      dbg("delta_emit", {
+        requestId,
+        deltaLen: delta.length,
+        fullLen: fullText.length,
+        status: evt.status || undefined
+      });
+      emit({
+        type: "delta",
+        requestId,
+        text: fullText,
+        delta,
+        conversationId: evt.conversationId || undefined,
+        responseId: evt.responseId || undefined
+      });
+    }
+  }
+
+  if (evt.isDone) {
+    const finalText = evt.text || session.prevText;
+    session.prevText = "";
+    session.streamDone = true;
+    emit({ type: "done", requestId, text: finalText });
+  }
+}
+
+function feedStreamText(chunk: string, session: ActiveSession, requestId: string): void {
+  const w = window as unknown as {
+    __geminiStreamBuf?: Record<string, string>;
+    __geminiStreamBufStripped?: Record<string, boolean>;
+  };
+  if (!w.__geminiStreamBuf) w.__geminiStreamBuf = {};
+  let buffer = (w.__geminiStreamBuf[requestId] || "") + chunk;
+  if (!w.__geminiStreamBufStripped?.[requestId]) {
+    const before = buffer.length;
+    buffer = stripGoogleStreamPrefix(buffer);
+    w.__geminiStreamBufStripped = w.__geminiStreamBufStripped || {};
+    w.__geminiStreamBufStripped[requestId] = true;
+    if (before !== buffer.length) {
+      dbg("strip_xssi_prefix", { requestId, removed: before - buffer.length });
+    }
+  }
+  buffer = feedStreamBuffer(buffer, (evt) => emitParsedEvent(session, evt));
+  w.__geminiStreamBuf[requestId] = buffer;
+}
+
+function flushStreamBuffer(requestId: string): void {
+  const w = window as unknown as {
+    __geminiStreamBuf?: Record<string, string>;
+    __geminiStreamBufStripped?: Record<string, boolean>;
+  };
+  const session = activeSession;
+  if (!session) return;
+  let tail = w.__geminiStreamBuf?.[requestId] || "";
+  if (tail) {
+    tail = feedStreamBuffer(tail, (evt) => emitParsedEvent(session, evt));
+    w.__geminiStreamBuf![requestId] = tail;
+  }
+  if (w.__geminiStreamBuf) delete w.__geminiStreamBuf[requestId];
+  if (w.__geminiStreamBufStripped) delete w.__geminiStreamBufStripped[requestId];
+}
+
 async function consumeStreamBranch(stream: ReadableStream<Uint8Array>, requestId: string): Promise<void> {
+  const session = activeSession;
+  if (!session || session.requestId !== requestId) return;
+
   const reader = stream.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  let prevText = "";
   let doneEmitted = false;
 
   emit({ type: "start", requestId });
+  markRouteStarted();
+  dbg("consume_start", { requestId, transport: "fetch-tee" });
 
+  let bytesRead = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // Each frame is "<length>\n<payload>", with optional [ ] wrappers per old chunkSplitter.
-      while (true) {
-        const newlineIdx = buffer.indexOf("\n");
-        if (newlineIdx < 0) break;
-        const lenRaw = buffer.slice(0, newlineIdx).trim().replace(/^\[|\]$/g, "");
-        if (lenRaw === "") {
-          buffer = buffer.slice(newlineIdx + 1);
-          continue;
-        }
-        const len = parseInt(lenRaw, 10);
-        if (!Number.isFinite(len) || Number.isNaN(len)) {
-          buffer = buffer.slice(newlineIdx + 1);
-          continue;
-        }
-        const total = newlineIdx + 1 + len;
-        if (buffer.length < total) break;
-
-        const payload = buffer.slice(newlineIdx + 1, total);
-        buffer = buffer.slice(total);
-
-        const evt = parseGeminiChunk(payload);
-        if (!evt) continue;
-
-        if (evt.status) {
-          emit({ type: "status", requestId, status: evt.status });
-        }
-        if (evt.text) {
-          const delta = evt.text.startsWith(prevText)
-            ? evt.text.slice(prevText.length)
-            : evt.text;
-          prevText = evt.text;
-          emit({
-            type: "delta",
-            requestId,
-            text: evt.text,
-            delta,
-            conversationId: evt.conversationId || undefined,
-            responseId: evt.responseId || undefined
-          });
-        }
-        if (evt.isDone) {
-          doneEmitted = true;
-          emit({ type: "done", requestId, text: evt.text || prevText });
-        }
-      }
+      bytesRead += value?.length ?? 0;
+      feedStreamText(decoder.decode(value, { stream: true }), session, requestId);
     }
   } catch (err) {
-    emit({ type: "error", requestId, error: err instanceof Error ? err.message : String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
+    dbg("consume_error", { requestId, error: msg });
+    emit({ type: "error", requestId, error: msg });
+    doneEmitted = true;
   } finally {
     try {
       reader.releaseLock();
     } catch {
       // ignore
     }
-    if (!doneEmitted) {
-      emit({ type: "done", requestId, text: prevText });
+    const wbuf = window as unknown as { __geminiStreamBuf?: Record<string, string> };
+    const tail = wbuf.__geminiStreamBuf?.[requestId] || "";
+    if (!session.prevText && tail.trim()) {
+      const events = parseStreamBody(tail);
+      for (const evt of events) emitParsedEvent(session, evt);
+      dbg("fetch_parse_salvage", { requestId, eventCount: events.length, textLen: session.prevText.length });
+    }
+    flushStreamBuffer(requestId);
+    dbg("consume_end", {
+      requestId,
+      bytesRead,
+      textLen: session.prevText.length,
+      tailLen: tail.length,
+      tailPreview: isStreamDebugEnabled() ? tail.slice(0, 400) : undefined
+    });
+    if (!doneEmitted && !session.streamDone) {
+      const text = session.prevText;
+      session.prevText = "";
+      emit({ type: "done", requestId, text });
     }
   }
 }
 
-// Tracking / ads endpoints that Gemini's app calls but page CSP refuses to
-// connect to (visible as "Refused to connect because it violates the
-// document's Content Security Policy" errors in the console). We short-circuit
-// them here so the browser never dispatches the request and the CSP layer
-// stays quiet. We do NOT rely on this for blocking — it's purely to keep the
-// console clean and save a few network round-trips.
+type GeminiXHR = XMLHttpRequest & {
+  __geminiParsedPos?: number;
+  __geminiXHRStarted?: boolean;
+  __geminiXHRFinishing?: boolean;
+};
+
+function processXHRProgress(xhr: GeminiXHR, requestId: string): void {
+  const session = activeSession;
+  if (!session || session.requestId !== requestId) return;
+
+  const full = typeof xhr.responseText === "string" ? xhr.responseText : "";
+  if (!full) return;
+
+  if (!xhr.__geminiXHRStarted) {
+    xhr.__geminiXHRStarted = true;
+    emit({ type: "start", requestId });
+    markRouteStarted();
+    xhr.__geminiParsedPos = 0;
+    dbg("xhr_progress_start", { requestId });
+  }
+
+  const pos = xhr.__geminiParsedPos || 0;
+  const chunk = full.slice(pos);
+  if (chunk) {
+    feedStreamText(chunk, session, requestId);
+    xhr.__geminiParsedPos = full.length;
+  }
+}
+
+function finishXHRStream(xhr: GeminiXHR, requestId: string): void {
+  const session = activeSession;
+  if (!session || session.requestId !== requestId) return;
+  if (xhr.__geminiXHRFinishing) return;
+  xhr.__geminiXHRFinishing = true;
+
+  const full = typeof xhr.responseText === "string" ? xhr.responseText : "";
+  try {
+    processXHRProgress(xhr, requestId);
+    flushStreamBuffer(requestId);
+
+    if (!session.prevText && full.length > 0) {
+      dbg("parse_salvage", { requestId, bodyLen: full.length });
+      const events = parseStreamBody(full);
+      for (const evt of events) emitParsedEvent(session, evt);
+      dbg("parse_salvage_result", {
+        requestId,
+        eventCount: events.length,
+        textLen: session.prevText.length,
+        bodyPreview: isStreamDebugEnabled() ? full.slice(0, 500) : undefined
+      });
+    }
+
+    if (!session.streamDone) {
+      const finalText = session.prevText;
+      session.prevText = "";
+      session.streamDone = true;
+      dbg("xhr_stream_done", {
+        requestId,
+        bodyLen: full.length,
+        textLen: finalText.length,
+        parseEmpty: finalText.length === 0 && full.length > 0
+      });
+      if (finalText.length === 0 && full.length > 0 && isStreamDebugEnabled()) {
+        dbg("parse_empty", {
+          requestId,
+          bodyLen: full.length,
+          bodyPreview: full.slice(0, 800)
+        });
+      }
+      emit({ type: "done", requestId, text: finalText });
+    }
+  } catch (err) {
+    emit({ type: "error", requestId, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Control: sync CustomEvent from isolated content.ts (like old activeCh).
+// ---------------------------------------------------------------------------
+
+document.addEventListener(
+  STREAM_CONTROL_EVENT,
+  (event) => {
+    const detail = (event as CustomEvent<{ action?: string; requestId?: string }>).detail;
+    if (!detail) return;
+    if (detail.action === "arm") {
+      const id = armSession(detail.requestId);
+      emit({ type: "armed", requestId: id });
+      return;
+    }
+    if (detail.action === "disarm") {
+      disarmSession();
+    }
+  },
+  true
+);
+
+// ---------------------------------------------------------------------------
+// fetch / XHR / noop / visibility (unchanged behaviour for ads + background tab)
+// ---------------------------------------------------------------------------
+
 const NOOP_HOST_SUFFIXES = [
   "googleadservices.com",
   "googletagmanager.com",
@@ -214,6 +332,13 @@ function emptyOkResponse(url: string): Response {
   });
 }
 
+function resolveFetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return normalizeGeminiRequestUrl(input);
+  if (input instanceof URL) return input.href;
+  if (typeof Request !== "undefined" && input instanceof Request) return input.url;
+  return "";
+}
+
 function patchFetch(): void {
   const w = window as unknown as { __geminiStreamPatched?: boolean; fetch: typeof fetch };
   if (w.__geminiStreamPatched) return;
@@ -221,24 +346,40 @@ function patchFetch(): void {
   const origFetch = w.fetch.bind(window);
 
   w.fetch = async function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    let url = "";
-    if (typeof input === "string") url = input;
-    else if (input instanceof URL) url = input.toString();
-    else if (input && typeof (input as Request).url === "string") url = (input as Request).url;
+    const url = resolveFetchUrl(input);
 
-    if (isNoopUrl(url)) {
-      return emptyOkResponse(url);
+    if (isNoopUrl(url)) return emptyOkResponse(url);
+
+    const isStream = isGeminiStreamGenerateUrl(url);
+    if (isStream) {
+      dbg("fetch_stream_seen", {
+        url: truncateUrl(url, 200),
+        armed: isArmed(),
+        requestId: activeSession?.requestId
+      });
+    }
+    const response = await origFetch(input as RequestInfo, init);
+
+    if (!isStream) return response;
+    if (!response.body) {
+      dbg("fetch_pass_no_body", { url: truncateUrl(url, 200) });
+      return response;
+    }
+    if (!isArmed()) {
+      dbg("fetch_pass_not_armed", { url: truncateUrl(url, 200) });
+      return response;
     }
 
-    const isStream = /StreamGenerate/i.test(url);
-    const response = await origFetch(input as RequestInfo, init);
-    if (!isStream || !response.body) return response;
-
     try {
+      const session = activeSession!;
+      const requestId = session.requestId;
+      dbg("fetch_stream_tee", { requestId, url: truncateUrl(url, 200) });
       const [appBranch, ourBranch] = response.body.tee();
-      const requestId = `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      consumeStreamBranch(ourBranch, requestId).catch(() => {
-        // already emitted error event
+      consumeStreamBranch(ourBranch, requestId).catch((err: unknown) => {
+        dbg("consume_unhandled", {
+          requestId,
+          error: err instanceof Error ? err.message : String(err)
+        });
       });
       return new Response(appBranch, {
         status: response.status,
@@ -246,7 +387,6 @@ function patchFetch(): void {
         headers: response.headers
       });
     } catch {
-      // tee or Response construction failed — return original, no intercept
       return response;
     }
   };
@@ -261,17 +401,20 @@ function patchXHR(): void {
   const origSend = XMLHttpRequest.prototype.send;
 
   XMLHttpRequest.prototype.open = function (
-    this: XMLHttpRequest & { __geminiNoop?: boolean; __geminiUrl?: string },
+    this: XMLHttpRequest & {
+      __geminiNoop?: boolean;
+      __geminiUrl?: string;
+      __geminiStream?: boolean;
+    },
     method: string,
     url: string | URL,
     ...rest: unknown[]
   ): void {
-    const urlStr = typeof url === "string" ? url : url.toString();
+    const urlStr = normalizeGeminiRequestUrl(typeof url === "string" ? url : url.toString());
     this.__geminiNoop = isNoopUrl(urlStr);
     this.__geminiUrl = urlStr;
+    this.__geminiStream = isGeminiStreamGenerateUrl(urlStr);
     if (this.__geminiNoop) {
-      // Replace target with a harmless data: URL so the underlying XHR never
-      // touches the tracker host and CSP never fires.
       origOpen.call(
         this,
         method,
@@ -284,14 +427,41 @@ function patchXHR(): void {
   } as typeof XMLHttpRequest.prototype.open;
 
   XMLHttpRequest.prototype.send = function (
-    this: XMLHttpRequest & { __geminiNoop?: boolean },
+    this: XMLHttpRequest & {
+      __geminiNoop?: boolean;
+      __geminiUrl?: string;
+      __geminiStream?: boolean;
+      __geminiStreamHooked?: boolean;
+    },
     body?: Document | XMLHttpRequestBodyInit | null
   ): void {
     if (this.__geminiNoop) {
-      // Fire and forget — data: URL resolves instantly.
       origSend.call(this);
       return;
     }
+
+    if (this.__geminiStream) {
+      dbg("xhr_stream_seen", {
+        url: truncateUrl(this.__geminiUrl || "", 200),
+        armed: isArmed()
+      });
+    }
+
+    if (this.__geminiStream && isArmed() && !this.__geminiStreamHooked) {
+      this.__geminiStreamHooked = true;
+      const requestId = activeSession!.requestId;
+      const xhr = this as GeminiXHR;
+      xhr.addEventListener("readystatechange", () => {
+        try {
+          if (xhr.readyState < 3) return;
+          processXHRProgress(xhr, requestId);
+          if (xhr.readyState === 4) finishXHRStream(xhr, requestId);
+        } catch {
+          // ignore
+        }
+      });
+    }
+
     origSend.call(this, body as XMLHttpRequestBodyInit);
   } as typeof XMLHttpRequest.prototype.send;
 }
@@ -309,17 +479,6 @@ function patchBeacon(): void {
   };
 }
 
-/**
- * Keep the page in "visible / focused" mode even when the tab is backgrounded.
- *
- * Chrome still throttles setTimeout/setInterval at the engine level when the
- * tab is truly hidden, but a lot of web apps (Gemini included) also gate
- * their own work on document.visibilityState — pausing streams, deferring
- * UI updates, or short-circuiting fetch handlers. Spoofing the API keeps
- * those code paths active. Combined with our MutationObserver-driven
- * detector in content.ts (which is not throttled), this gives reliable
- * background behaviour without having to activate the tab.
- */
 function patchVisibility(): void {
   const w = window as unknown as { __geminiVisibilityPatched?: boolean };
   if (w.__geminiVisibilityPatched) return;
@@ -339,7 +498,7 @@ function patchVisibility(): void {
         get: () => value
       });
     } catch {
-      // not configurable in some browsers — ignore
+      // ignore
     }
   }
 
@@ -351,8 +510,6 @@ function patchVisibility(): void {
     // ignore
   }
 
-  // Drop visibilitychange/freeze listeners on document/window so Gemini's
-  // app code never learns the tab was backgrounded.
   const blockedTypes = new Set([
     "visibilitychange",
     "webkitvisibilitychange",
@@ -378,7 +535,6 @@ function patchVisibility(): void {
     return origAdd.call(this, type, listener as EventListener, options);
   } as typeof EventTarget.prototype.addEventListener;
 
-  // Some libraries assign to onvisibilitychange/onblur directly. Stub them.
   const stubProps: Array<[Document | Window, string]> = [
     [document, "onvisibilitychange"],
     [document, "onwebkitvisibilitychange"],
@@ -407,9 +563,40 @@ export default defineContentScript({
   runAt: "document_start",
   world: "MAIN",
   main() {
+    const w = window as Window & {
+      __geminiStreamPatched?: boolean;
+      __geminiXHRPatched?: boolean;
+      __geminiVisibilityPatched?: boolean;
+      __extractTokenStreamProbe?: () => {
+        fetchPatched: boolean;
+        xhrPatched: boolean;
+        visibilityPatched: boolean;
+        armed: boolean;
+        requestId: string | null;
+        href: string;
+      };
+    };
+
+    installStreamDebugGlobal("intercept");
     patchVisibility();
     patchFetch();
     patchXHR();
     patchBeacon();
+
+    w.__extractTokenStreamProbe = () => ({
+      fetchPatched: Boolean(w.__geminiStreamPatched),
+      xhrPatched: Boolean(w.__geminiXHRPatched),
+      visibilityPatched: Boolean(w.__geminiVisibilityPatched),
+      armed: isArmed(),
+      requestId: activeSession?.requestId ?? null,
+      href: location.href
+    });
+
+    dbg("patches_installed", {
+      debug: isStreamDebugEnabled(),
+      href: location.href,
+      fetchPatched: Boolean(w.__geminiStreamPatched),
+      pattern: "BardFrontendService/StreamGenerate"
+    });
   }
 });
