@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../log_format.dart';
 import '../main.dart';
 
 class LogScreen extends StatefulWidget {
@@ -195,8 +196,8 @@ class _LogLine extends StatelessWidget {
 
   static final _levelRe = RegExp(r'\b(ERROR|WARN|INFO|DEBUG|TRACE)\b', caseSensitive: false);
 
-  Color _lineColor() {
-    final l = line.toLowerCase();
+  Color _lineColor(String text) {
+    final l = text.toLowerCase();
     if (l.contains('error') || l.startsWith('err ')) return const Color(0xfff85149);
     if (l.contains('warn')) return const Color(0xffd29922);
     if (l.contains('---') || l.contains('listening') || l.contains('started')) {
@@ -205,8 +206,8 @@ class _LogLine extends StatelessWidget {
     return const Color(0xffc9d1d9);
   }
 
-  String? _extractLevel() {
-    final m = _levelRe.firstMatch(line);
+  String? _extractLevel(String text) {
+    final m = _levelRe.firstMatch(text);
     return m?.group(0)?.toUpperCase();
   }
 
@@ -222,8 +223,9 @@ class _LogLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _lineColor();
-    final level = _extractLevel();
+    final text = stripAnsiEscapes(line);
+    final color = _lineColor(text);
+    final level = _extractLevel(text);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 1),
@@ -269,7 +271,7 @@ class _LogLine extends StatelessWidget {
           // Log text
           Expanded(
             child: SelectableText(
-              line,
+              text,
               style: TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12,

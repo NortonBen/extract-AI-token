@@ -1,13 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'api_url.dart';
 import 'app_state.dart';
+import 'desktop_tray.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/log_screen.dart';
 import 'screens/settings_screen.dart';
@@ -165,28 +164,15 @@ ThemeData _buildTheme() {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
+  if (!kIsWeb) {
+    await windowManager.ensureInitialized();
+    await windowManager.setTitle('Extract AI Token');
+  }
 
-  // Configure window before hiding.
-  await windowManager.waitUntilReadyToShow(
-    WindowOptions(
-      title: 'Extract AI Token',
-      size: const Size(760, 540),
-      minimumSize: const Size(580, 420),
-      center: true,
-      titleBarStyle: TitleBarStyle.normal,
-      backgroundColor: AppColors.bg,
-    ),
-  );
-  // Hide window on startup — runs as background tray app.
-  await windowManager.hide();
-  await windowManager.setPreventClose(true);
-
-  // Init state (loads prefs, starts backend).
   await AppState.instance.init();
 
-  // Install tray.
-  await _DesktopTray.instance.install();
+  AppState.onTrayRefresh = () => unawaited(DesktopTray.instance.refresh());
+  await DesktopTray.instance.install();
 
   runApp(
     ChangeNotifierProvider.value(
@@ -203,41 +189,29 @@ class _App extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Rebuild tray whenever state changes.
-    context.watch<AppState>();
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => unawaited(_DesktopTray.instance.refresh()),
-    );
-
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Extract AI Token',
       theme: _buildTheme(),
       darkTheme: _buildTheme(),
       themeMode: ThemeMode.dark,
-      home: _Shell(key: _shellKey),
+      home: const _Shell(),
     );
   }
 }
 
 // ─── Shell (navigation) ───────────────────────────────────────────────────────
 
-final _shellKey = GlobalKey<_ShellState>();
-
 class _Shell extends StatefulWidget {
-  const _Shell({super.key});
+  const _Shell();
 
   @override
   State<_Shell> createState() => _ShellState();
 }
 
-class _ShellState extends State<_Shell> with WindowListener {
+class _ShellState extends State<_Shell> {
   int _index = 0;
   bool _sidebarExpanded = true;
-
-  // Called by tray to navigate to a specific tab.
-  // ignore: use_setters_to_change_properties
-  void navigateTo(int index) => setState(() => _index = index);
 
   static const _pages = [
     DashboardScreen(),
@@ -250,24 +224,6 @@ class _ShellState extends State<_Shell> with WindowListener {
     (Icons.terminal_outlined, Icons.terminal_rounded, 'Logs'),
     (Icons.settings_outlined, Icons.settings_rounded, 'Settings'),
   ];
-
-  @override
-  void initState() {
-    super.initState();
-    windowManager.addListener(this);
-  }
-
-  @override
-  void dispose() {
-    windowManager.removeListener(this);
-    super.dispose();
-  }
-
-  // Keep app alive when user closes window — quit only from tray.
-  @override
-  void onWindowClose() async {
-    await windowManager.hide();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -514,251 +470,5 @@ class _StatusDot extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-// ─── Desktop Tray ────────────────────────────────────────────────────────────
-
-final class _TrayClickShowsMenu with TrayListener {
-  @override
-  void onTrayIconMouseUp() => trayManager.popUpContextMenu();
-
-  @override
-  void onTrayIconRightMouseUp() => trayManager.popUpContextMenu();
-}
-
-class _DesktopTray {
-  _DesktopTray._();
-  static final _DesktopTray instance = _DesktopTray._();
-
-  final _TrayClickShowsMenu _clickMenu = _TrayClickShowsMenu();
-  bool _installed = false;
-  Timer? _refreshDebounce;
-  bool _refreshing = false;
-
-  Future<void> install() async {
-    try {
-      final iconPath =
-          Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png';
-      await trayManager.setIcon(
-        iconPath,
-        isTemplate: Platform.isMacOS,
-        iconSize: 22,
-      );
-      await trayManager.setToolTip(_tooltip());
-      await _pushMenu();
-      if (!_installed) {
-        trayManager.addListener(_clickMenu);
-        _installed = true;
-      }
-    } catch (e) {
-      debugPrint('Tray install error: $e');
-    }
-  }
-
-  Future<void> refresh() async {
-    // Debounce: state notifications often come in bursts (start → poll →
-    // running). Spamming setContextMenu during a user interaction can drop
-    // an in-flight click. Coalesce updates to a single push.
-    _refreshDebounce?.cancel();
-    _refreshDebounce = Timer(const Duration(milliseconds: 150), () async {
-      if (!_installed || _refreshing) return;
-      _refreshing = true;
-      try {
-        await trayManager.setToolTip(_tooltip());
-        await _pushMenu();
-      } catch (e) {
-        debugPrint('Tray refresh error: $e');
-      } finally {
-        _refreshing = false;
-      }
-    });
-  }
-
-  Future<void> dispose() async {
-    if (!_installed) return;
-    _refreshDebounce?.cancel();
-    trayManager.removeListener(_clickMenu);
-    _installed = false;
-    await trayManager.destroy();
-  }
-
-  String _tooltip() {
-    final s = AppState.instance;
-    final label = switch (s.status) {
-      BackendStatus.starting => 'starting…',
-      BackendStatus.running => 'running on port ${s.port}',
-      BackendStatus.stopped => 'stopped',
-      BackendStatus.failed => 'failed',
-    };
-    return 'Extract AI Token · $label';
-  }
-
-  Future<void> _pushMenu() async {
-    final s = AppState.instance;
-    final running = s.status == BackendStatus.running;
-    final busy = s.status == BackendStatus.starting;
-
-    await trayManager.setContextMenu(
-      Menu(
-        items: [
-          // Status label
-          MenuItem(
-            key: 'status',
-            label: switch (s.status) {
-              BackendStatus.starting => 'Starting…',
-              BackendStatus.running => '● Running  (port ${s.port})',
-              BackendStatus.stopped => '○ Stopped',
-              BackendStatus.failed => '✕ Failed',
-            },
-            disabled: true,
-          ),
-          MenuItem.separator(),
-
-          // Open windows
-          MenuItem(
-            key: 'open_dashboard',
-            label: 'Open Dashboard',
-            onClick: (_) => _openWindow(0),
-          ),
-          MenuItem(
-            key: 'open_logs',
-            label: 'Open Logs',
-            onClick: (_) => _openWindow(1),
-          ),
-          MenuItem(
-            key: 'open_settings',
-            label: 'Open Settings',
-            onClick: (_) => _openWindow(2),
-          ),
-          MenuItem.separator(),
-
-          // Copy URL
-          MenuItem(
-            key: 'copy_url',
-            label: 'Copy API URL',
-            disabled: !running,
-            onClick: (_) => _copyApiUrl(s),
-          ),
-          MenuItem.separator(),
-
-          // Backend controls
-          MenuItem(
-            key: 'start',
-            label: 'Start Backend',
-            disabled: running || busy,
-            onClick: (_) => _runBackendAction('start', () => s.start()),
-          ),
-          MenuItem(
-            key: 'restart',
-            label: 'Restart Backend',
-            disabled: !running,
-            onClick: (_) => _runBackendAction('restart', () => s.restart()),
-          ),
-          MenuItem(
-            key: 'stop',
-            label: 'Stop Backend',
-            disabled: !running,
-            onClick: (_) => _runBackendAction('stop', () => s.stop()),
-          ),
-          MenuItem.separator(),
-
-          MenuItem(
-            key: 'quit',
-            label: 'Quit',
-            onClick: (_) => _quitNow(s),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Wrap a backend control action with logging + an immediate menu push so
-  /// the disabled/enabled state of Start/Stop/Restart reflects reality
-  /// without waiting for the 150ms debounce.
-  Future<void> _runBackendAction(String label, Future<void> Function() action) async {
-    debugPrint('[tray] $label backend');
-    try {
-      await action();
-      debugPrint('[tray] $label backend ok');
-    } catch (e) {
-      debugPrint('[tray] $label backend failed: $e');
-    } finally {
-      try {
-        if (_installed) {
-          await trayManager.setToolTip(_tooltip());
-          await _pushMenu();
-        }
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _copyApiUrl(AppState s) async {
-    final url = apiV1Url(s.port);
-    final ok = await copyTextToClipboard(url);
-    debugPrint('[tray] copy api url → $url  (ok=$ok)');
-  }
-
-  Future<void> _quitNow(AppState s) async {
-    // Hard-deadline shutdown. Whatever happens in cleanup the process MUST
-    // terminate within ~1.5s — otherwise the user sees Quit "doing nothing".
-    // setPreventClose is cleared up-front so nothing in the engine layer
-    // blocks the exit, and cleanup is fire-and-bounded.
-    try {
-      await windowManager.setPreventClose(false);
-    } catch (_) {}
-    try {
-      await Future.any<void>([
-        _quitCleanup(s),
-        Future<void>.delayed(const Duration(milliseconds: 1500)),
-      ]);
-    } catch (_) {}
-    exit(0);
-  }
-
-  Future<void> _quitCleanup(AppState s) async {
-    try {
-      await s.stop();
-    } catch (_) {}
-    try {
-      await dispose();
-    } catch (_) {}
-  }
-
-  Future<void> _openWindow(int tabIndex) async {
-    // Set the target tab early. navigateTo only calls setState; safe even
-    // when the shell tree is not yet visible.
-    _shellKey.currentState?.navigateTo(tabIndex);
-
-    try {
-      // Give the tray menu a moment to fully dismiss so macOS can transfer
-      // focus to our window. Without this short yield, the first click often
-      // brings up the menu, the second click only triggers onClick and then
-      // sometimes the window only actually surfaces on the third try.
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-
-      if (await windowManager.isMinimized()) {
-        await windowManager.restore();
-      }
-      if (!await windowManager.isVisible()) {
-        await windowManager.show();
-      }
-      await windowManager.focus();
-
-      // macOS background-tray apps sometimes need a second activation kick
-      // because NSApp isn't yet the frontmost app after the menu closes.
-      if (Platform.isMacOS) {
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        await windowManager.show();
-        await windowManager.focus();
-      }
-
-      // Ensure the requested tab is selected once the shell rebuilds.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _shellKey.currentState?.navigateTo(tabIndex);
-      });
-    } catch (e) {
-      debugPrint('[tray] _openWindow failed: $e');
-    }
   }
 }

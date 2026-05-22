@@ -8,6 +8,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'log_format.dart';
+
 const _kPortKey = 'backend_port';
 const _kPublicBindKey = 'backend_public_bind';
 const _kMaxLogLines = 500;
@@ -85,7 +87,6 @@ class AppState extends ChangeNotifier {
     await _launcher.stop();
     _setStatus(BackendStatus.stopped);
     dashboard = null;
-    notifyListeners();
   }
 
   Future<void> restart() async {
@@ -110,14 +111,20 @@ class AppState extends ChangeNotifier {
 
   // ── Internals ────────────────────────────────────────────────────────────────
 
+  /// Gọi khi [status] đổi — refresh tray (old app không refresh mỗi log/poll).
+  static void Function()? onTrayRefresh;
+
   void _setStatus(BackendStatus s, {String? error}) {
     status = s;
     errorMessage = error;
     notifyListeners();
+    onTrayRefresh?.call();
   }
 
   void _addLog(String line) {
-    logs.add(line);
+    final clean = stripAnsiEscapes(line);
+    if (clean.isEmpty) return;
+    logs.add(clean);
     if (logs.length > _kMaxLogLines) logs.removeAt(0);
     notifyListeners();
   }
@@ -202,6 +209,7 @@ class _BackendLauncher {
       const [],
       environment: {
         ...Platform.environment,
+        'NO_COLOR': '1',
         'APP_ADDR': addr,
         'SQLITE_PATH': dbPath,
       },

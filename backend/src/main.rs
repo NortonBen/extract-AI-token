@@ -20,11 +20,14 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let use_ansi = std::env::var_os("NO_COLOR").is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stderr());
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info,tab_debug=info")),
         )
+        .with_ansi(use_ansi)
         .init();
 
     let addr = env::var("APP_ADDR").unwrap_or_else(|_| "127.0.0.1:9516".to_string());
