@@ -18,6 +18,11 @@ use crate::models::{
     SetBusyRequest, UpsertAccountRequest, UpsertModelRequest,
 };
 use crate::state::{AccountRow, AppState, HistoryRow, ModelRow, WsRpcResponse};
+use crate::sanitize::sanitize_model_output;
+use crate::tools::{
+    build_prompt, looks_like_tool_calls_json, openai_tool_message, resolve_tool_calls_relaxed,
+    ChatMessage, ToolCall, ToolDefinition,
+};
 
 #[derive(Deserialize)]
 pub struct HistoryQuery {
@@ -54,8 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route("/ws", get(ws_upgrade))
         .route("/v1/accounts", get(list_accounts).put(upsert_account))
         .route("/v1/accounts/{id}", delete(delete_account))
-        .route("/v1/models", get(list_models).put(upsert_model))
+        .route("/v1/models", get(openai_list_models).put(upsert_model))
         .route("/v1/models/{id}", delete(delete_model))
+        .route("/v1/admin/models", get(list_models).put(upsert_model))
+        .route("/v1/admin/models/{id}", delete(delete_model))
         .route(
             "/v1/history",
             get(list_history).post(append_history).delete(clear_history),
@@ -367,6 +374,49 @@ async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// OpenAI-compatible `GET /v1/models` (used by OpenAI SDK `client.models.list()`).
+async fn openai_list_models(State(state): State<AppState>) -> impl IntoResponse {
+    let created = Utc::now().timestamp();
+    let mut ids: Vec<String> = match state.list_models() {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|r| r.enabled)
+            .map(|r| r.id)
+            .collect(),
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if ids.is_empty() {
+        ids = vec![
+            "gemini-flash".to_string(),
+            "google/gemini-flash".to_string(),
+        ];
+    }
+    let data: Vec<Value> = ids
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "object": "model",
+                "created": created,
+                "owned_by": "extract-ai-token"
+            })
+        })
+        .collect();
+    let out = serde_json::json!({
+        "object": "list",
+        "data": data
+    });
+    (StatusCode::OK, Json(out)).into_response()
+}
+
 async fn upsert_model(
     State(state): State<AppState>,
     Json(payload): Json<UpsertModelRequest>,
@@ -513,15 +563,11 @@ async fn get_dashboard(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct OpenAiChatCompletionRequest {
     model: Option<String>,
-    messages: Vec<OpenAiMessage>,
+    messages: Vec<ChatMessage>,
+    #[serde(default)]
+    tools: Vec<ToolDefinition>,
     stream: Option<bool>,
     account_id: Option<String>,
 }
@@ -530,14 +576,8 @@ async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(payload): Json<OpenAiChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let prompt = payload
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(|m| m.content.trim().to_string())
-        .unwrap_or_default();
-    if prompt.is_empty() {
+    let prompt = build_prompt(&payload.messages, &payload.tools);
+    if prompt.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiError {
@@ -600,36 +640,81 @@ async fn openai_chat_completions(
                 .into_response();
         }
     };
-    let response_text = data
+    let raw_response = data
         .get("response_text")
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
 
-    if stream {
-        return sse_chat_completion(model, response_text).into_response();
+    // Parse tool_calls from raw text before markdown/HTML sanitization.
+    let tool_calls = resolve_tool_calls_relaxed(&raw_response, &payload.tools);
+    let looks_like_tools = looks_like_tool_calls_json(&raw_response);
+    let mut response_text = if tool_calls.is_empty() {
+        sanitize_model_output(&raw_response)
+    } else {
+        String::new()
+    };
+    if tool_calls.is_empty() && response_text.trim().is_empty() && !raw_response.trim().is_empty() {
+        response_text = raw_response.trim().to_string();
+    }
+    if !payload.tools.is_empty() && tool_calls.is_empty() && looks_like_tools {
+        tracing::warn!(
+            "tools requested but tool_calls extraction failed; response_prefix={}",
+            raw_response.chars().take(400).collect::<String>()
+        );
+    }
+    if tool_calls.is_empty() && response_text.trim().is_empty() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: "empty model response from Gemini (no text or tool_calls)".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    let out = serde_json::json!({
-        "id": format!("chatcmpl-{}", Utc::now().timestamp_millis()),
-        "object": "chat.completion",
-        "created": Utc::now().timestamp(),
-        "model": model,
-        "choices": [{
+    if stream {
+        return sse_chat_completion(model, response_text, tool_calls).into_response();
+    }
+
+    let id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
+    let created = Utc::now().timestamp();
+    let usage = serde_json::json!({
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+    });
+
+    let choice = if !tool_calls.is_empty() {
+        serde_json::json!({
+            "index": 0,
+            "message": openai_tool_message(&tool_calls),
+            "finish_reason": "tool_calls"
+        })
+    } else {
+        serde_json::json!({
             "index": 0,
             "message": { "role": "assistant", "content": response_text },
             "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
+        })
+    };
+
+    let out = serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [choice],
+        "usage": usage
     });
     (StatusCode::OK, Json(out)).into_response()
 }
 
-fn sse_chat_completion(model: String, response_text: String) -> impl IntoResponse {
+fn sse_chat_completion(
+    model: String,
+    content_text: String,
+    tool_calls: Vec<ToolCall>,
+) -> impl IntoResponse {
     let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
     let id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
     let created = Utc::now().timestamp();
@@ -650,27 +735,80 @@ fn sse_chat_completion(model: String, response_text: String) -> impl IntoRespons
     let model_for_task = model.clone();
     let id_for_task = id.clone();
     tokio::spawn(async move {
-        let chunks = chunk_text(&response_text, 24);
-        for piece in chunks {
-            let event = serde_json::json!({
-                "id": id_for_task,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_for_task,
-                "choices": [{
-                    "index": 0,
-                    "delta": { "content": piece },
-                    "finish_reason": null
-                }]
-            });
-            if tx
-                .send(Ok(Event::default().data(event.to_string())))
-                .is_err()
-            {
-                return;
+        let finish_reason = if !tool_calls.is_empty() {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+
+        if !tool_calls.is_empty() {
+            for (i, tc) in tool_calls.iter().enumerate() {
+                let chunk_a = serde_json::json!({
+                    "id": id_for_task,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_for_task,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": i,
+                                "id": tc.id,
+                                "type": tc.call_type,
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": ""
+                                }
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                });
+                let _ = tx.send(Ok(Event::default().data(chunk_a.to_string())));
+
+                let chunk_b = serde_json::json!({
+                    "id": id_for_task,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_for_task,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": i,
+                                "function": {
+                                    "arguments": tc.function.arguments
+                                }
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                });
+                let _ = tx.send(Ok(Event::default().data(chunk_b.to_string())));
             }
-            tokio::time::sleep(Duration::from_millis(35)).await;
+        } else if !content_text.is_empty() {
+            for piece in chunk_text(&content_text, 24) {
+                let event = serde_json::json!({
+                    "id": id_for_task,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_for_task,
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "content": piece },
+                        "finish_reason": null
+                    }]
+                });
+                if tx
+                    .send(Ok(Event::default().data(event.to_string())))
+                    .is_err()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(35)).await;
+            }
         }
+
         let final_event = serde_json::json!({
             "id": id_for_task,
             "object": "chat.completion.chunk",
@@ -679,7 +817,7 @@ fn sse_chat_completion(model: String, response_text: String) -> impl IntoRespons
             "choices": [{
                 "index": 0,
                 "delta": {},
-                "finish_reason": "stop"
+                "finish_reason": finish_reason
             }]
         });
         let _ = tx.send(Ok(Event::default().data(final_event.to_string())));
@@ -746,5 +884,38 @@ fn model_from_row(row: ModelRow) -> ModelConfig {
         enabled: row.enabled,
         created_at: row.created_at,
         updated_at: row.updated_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::message_content_to_string;
+    use serde_json::json;
+
+    #[test]
+    fn message_content_string() {
+        assert_eq!(message_content_to_string(&json!("hello")), "hello");
+    }
+
+    #[test]
+    fn openai_request_with_tools_deserializes() {
+        let body = json!({
+            "model": "gemini-flash",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": { "type": "object" }
+                }
+            }],
+            "messages": [
+                { "role": "user", "content": "Weather in Hanoi?" }
+            ]
+        });
+        let req: OpenAiChatCompletionRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(req.tools.len(), 1);
+        assert!(build_prompt(&req.messages, &req.tools).contains("get_weather"));
     }
 }

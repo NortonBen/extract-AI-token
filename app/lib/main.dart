@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'api_url.dart';
 import 'app_state.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/log_screen.dart';
@@ -693,47 +693,9 @@ class _DesktopTray {
     }
   }
 
-  /// Copy `http://127.0.0.1:<port>` to the system clipboard. Flutter's
-  /// Clipboard API can silently fail in a no-window tray app on macOS, so
-  /// we try it first and fall back to pbcopy on macOS.
   Future<void> _copyApiUrl(AppState s) async {
-    final url = 'http://127.0.0.1:${s.port}';
-    bool ok = false;
-    try {
-      await Clipboard.setData(ClipboardData(text: url));
-      ok = true;
-    } catch (e) {
-      debugPrint('[tray] Clipboard.setData failed: $e');
-    }
-    if (!ok && Platform.isMacOS) {
-      try {
-        final proc = await Process.start('pbcopy', const []);
-        proc.stdin.write(url);
-        await proc.stdin.close();
-        final code = await proc.exitCode.timeout(const Duration(seconds: 2));
-        ok = code == 0;
-      } catch (e) {
-        debugPrint('[tray] pbcopy fallback failed: $e');
-      }
-    }
-    if (!ok && Platform.isLinux) {
-      for (final cmd in const [
-        ['wl-copy'],
-        ['xclip', '-selection', 'clipboard'],
-        ['xsel', '--clipboard', '--input'],
-      ]) {
-        try {
-          final proc = await Process.start(cmd.first, cmd.sublist(1));
-          proc.stdin.write(url);
-          await proc.stdin.close();
-          final code = await proc.exitCode.timeout(const Duration(seconds: 2));
-          if (code == 0) {
-            ok = true;
-            break;
-          }
-        } catch (_) {}
-      }
-    }
+    final url = apiV1Url(s.port);
+    final ok = await copyTextToClipboard(url);
     debugPrint('[tray] copy api url → $url  (ok=$ok)');
   }
 

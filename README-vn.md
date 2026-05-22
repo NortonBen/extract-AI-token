@@ -416,7 +416,10 @@ node chat-stream.mjs "haiku về cà phê"
 npm install
 node openai-sdk.mjs "chào bạn"
 STREAM=1 node openai-sdk.mjs "stream 1 fact"
+node tools.mjs
 ```
+
+API hỗ trợ `tools` / `tool_calls` (function calling kiểu OpenAI): gửi `tools[]` trong body, nhận `finish_reason: "tool_calls"` khi model trả JSON gọi tool.
 
 | Biến | Mặc định | Ý nghĩa |
 |------|----------|---------|

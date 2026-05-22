@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../api_url.dart';
 import '../app_state.dart';
 import '../main.dart';
 
@@ -164,7 +165,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               _InfoRow(
                 label: 'API URL',
-                value: 'http://127.0.0.1:${state.port}',
+                value: apiV1Url(state.port),
                 monospace: true,
                 copyable: true,
               ),
@@ -195,18 +196,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _ActionRow(
                 icon: Icons.copy_rounded,
                 label: 'Copy API URL',
-                description: 'Copy base URL to clipboard',
-                enabled: state.status == BackendStatus.running,
+                description: 'Copy OpenAI base URL (…/v1) to clipboard',
+                enabled: true,
                 onTap: () async {
-                  await Clipboard.setData(
-                    ClipboardData(text: 'http://127.0.0.1:${state.port}'),
-                  );
+                  final ok = await copyTextToClipboard(apiV1Url(state.port));
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('URL copied'),
-                      width: 180,
-                      duration: Duration(seconds: 2),
+                    SnackBar(
+                      content: Text(ok ? 'URL copied' : 'Copy failed — try again'),
+                      width: 220,
+                      duration: const Duration(seconds: 2),
                     ),
                   );
                 },
@@ -384,10 +383,15 @@ class _InfoRow extends StatelessWidget {
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
               tooltip: 'Copy',
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: value));
+              onPressed: () async {
+                final ok = await copyTextToClipboard(value);
+                if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Copied'), width: 140, duration: Duration(seconds: 2)),
+                  SnackBar(
+                    content: Text(ok ? 'Copied' : 'Copy failed — try again'),
+                    width: 180,
+                    duration: const Duration(seconds: 2),
+                  ),
                 );
               },
             ),

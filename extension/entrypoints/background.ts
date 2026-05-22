@@ -634,6 +634,7 @@ async function sendPromptViaOpenAiApi(payload: {
     const decoder = new TextDecoder();
     let buffer = "";
     let acc = "";
+    let sawToolCalls = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -647,20 +648,34 @@ async function sendPromptViaOpenAiApi(payload: {
         if (data === "[DONE]") continue;
         try {
           const obj = JSON.parse(data);
-          const piece = obj?.choices?.[0]?.delta?.content;
+          const choice = obj?.choices?.[0];
+          const piece = choice?.delta?.content;
           if (typeof piece === "string") acc += piece;
+          const toolDelta = choice?.delta?.tool_calls;
+          if (Array.isArray(toolDelta) && toolDelta.length > 0) sawToolCalls = true;
+          if (choice?.finish_reason === "tool_calls") sawToolCalls = true;
         } catch {
           // skip malformed chunk
         }
       }
     }
-    if (!acc.trim()) throw new Error("Streamed response content is empty");
+    if (!acc.trim() && !sawToolCalls) throw new Error("Streamed response content is empty");
     return { accountId: payload.accountId, model: payload.model, responseText: acc };
   }
   const data = await response.json().catch(() => ({}));
-  const responseText = String(data?.choices?.[0]?.message?.content || "");
-  if (!responseText.trim()) {
+  const choice = data?.choices?.[0];
+  const toolCalls = choice?.message?.tool_calls;
+  const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+  const responseText = String(choice?.message?.content || "");
+  if (!responseText.trim() && !hasToolCalls) {
     throw new Error("OpenAI response content is empty");
+  }
+  if (hasToolCalls) {
+    return {
+      accountId: payload.accountId,
+      model: payload.model,
+      responseText: JSON.stringify(toolCalls)
+    };
   }
   return { accountId: payload.accountId, model: payload.model, responseText };
 }

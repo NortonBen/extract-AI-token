@@ -27,7 +27,7 @@ try {
       await dump("accounts", "/v1/accounts");
       break;
     case "models":
-      await dump("models", "/v1/models");
+      await dump("models", "/v1/admin/models");
       break;
     case "history": {
       const limit = arg ? Number(arg) : 20;
@@ -47,7 +47,7 @@ try {
       await dump("health", "/health");
       await dump("dashboard", "/v1/dashboard");
       await dump("accounts", "/v1/accounts");
-      await dump("models", "/v1/models");
+      await dump("models", "/v1/admin/models");
       await dump("busy", "/v1/busy");
       await dump("history (limit 5)", "/v1/history?limit=5");
   }

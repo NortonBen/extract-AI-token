@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../api_url.dart';
 import '../app_state.dart';
 import '../main.dart';
 
@@ -193,18 +193,36 @@ class _UrlCard extends StatefulWidget {
 
 class _UrlCardState extends State<_UrlCard> {
   bool _copied = false;
+  bool _copying = false;
 
   Future<void> _copy() async {
-    final url = 'http://127.0.0.1:${widget.port}';
-    await Clipboard.setData(ClipboardData(text: url));
-    setState(() => _copied = true);
-    await Future<void>.delayed(const Duration(seconds: 2));
-    if (mounted) setState(() => _copied = false);
+    if (_copying) return;
+    _copying = true;
+    final url = apiV1Url(widget.port);
+    final ok = await copyTextToClipboard(url);
+    if (!mounted) {
+      _copying = false;
+      return;
+    }
+    if (ok) {
+      setState(() => _copied = true);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (mounted) setState(() => _copied = false);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Copy failed — try again'),
+          width: 200,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+    _copying = false;
   }
 
   @override
   Widget build(BuildContext context) {
-    final url = 'http://127.0.0.1:${widget.port}';
+    final url = apiV1Url(widget.port);
 
     return Container(
       decoration: BoxDecoration(
