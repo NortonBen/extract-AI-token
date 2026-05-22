@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.0.3] — 2026-05-22
+
+### Added
+
+- **Extension — tái sử dụng tab Gemini** — sau mỗi chat thành công giữ tab, không đóng/mở lại liên tục.
+- **Extension — chuẩn bị lượt chat tiếp theo** — click **Cuộc trò chuyện mới** (SPA) thay vì reload trang; reset stream/composer trong content script.
+- **Desktop — `backend_binary.dart`** — tham chiếu binary backend nhúng rõ ràng hơn trong app bundle.
+
+### Changed
+
+- Extension `prepareAccountTabForNextChat` thay cho `closeAccountTab` sau `send_prompt` / stream.
+- Desktop: cải thiện shutdown backend khi thoát app; cập nhật build/sign scripts và workflow release.
+
+### Downloads (CI assets on tag `v0.0.3`)
+
+| Asset | Description |
+|-------|-------------|
+| `extension-chrome` zip | Chrome MV3 side panel |
+| `extract-ai-token-backend-*.zip` / `.tar.gz` | CLI backend only |
+| `extract-ai-token-v0.0.3-macos.dmg` / `.zip` | macOS desktop app |
+| `extract-ai-token-windows.zip` | Windows desktop app |
+| `extract-ai-token-linux.tar.gz` | Linux desktop bundle |
+| `ghcr.io/<owner>/extract-ai-token:0.0.3` | Docker image |
+
 ## [0.0.2] — 2026-05-22
 
 ### Added
