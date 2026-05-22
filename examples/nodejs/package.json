@@ -1,0 +1,19 @@
+{
+  "name": "extract-ai-token-nodejs-examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node.js examples calling the Extract AI Token backend (OpenAI-compatible).",
+  "scripts": {
+    "chat": "node chat.mjs",
+    "chat:stream": "node chat-stream.mjs",
+    "accounts": "node accounts.mjs",
+    "openai-sdk": "node openai-sdk.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "openai": "^4.73.0"
+  }
+}
