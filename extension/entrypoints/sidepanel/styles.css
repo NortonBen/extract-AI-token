@@ -175,6 +175,49 @@ pre {
   overflow-wrap: anywhere;
 }
 
+/* Latest response */
+.response-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fafbff 0%, #ffffff 100%);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.response-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(124, 58, 237, 0.06);
+  border-bottom: 1px solid #ece9ff;
+}
+
+.response-body {
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.response-text {
+  margin: 0;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.response-footer {
+  padding: 6px 12px;
+  border-top: 1px dashed #e5e7eb;
+  background: #fafbfd;
+  text-align: right;
+}
+
 @media (max-width: 780px) {
   .page {
     padding: 10px;

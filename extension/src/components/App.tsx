@@ -25,8 +25,10 @@ import {
   getDashboard,
   getState,
   reconnectBackend,
+  setAccountEnabled,
   setBackendConfig,
   sendPrompt,
+  stopPrompt,
   upsertAccount
 } from "../lib/extension-api";
 import { createAccountId } from "../lib/storage";
@@ -79,6 +81,8 @@ export function App() {
   const [backendPort, setBackendPort] = useState("8787");
   const [detectedPreview, setDetectedPreview] = useState<GeminiAccountPreview | null>(null);
   const [addAccountError, setAddAccountError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [streamEnabled, setStreamEnabled] = useState(false);
 
   const [settingsForm] = Form.useForm<{ host: string; port: string }>();
   const [accountForm] = Form.useForm<{ pageRoot: string; label: string }>();
@@ -131,6 +135,14 @@ export function App() {
     reload().catch((err: unknown) => {
       setError(err instanceof Error ? err.message : "Cannot load extension state");
     });
+    const timer = window.setInterval(() => {
+      reload().catch(() => {
+        // silent refresh failure — keep last good state
+      });
+    }, 3000);
+    return () => {
+      window.clearInterval(timer);
+    };
   }, []);
 
   async function onCreateAccount(values: { pageRoot: string; label: string }) {
@@ -192,15 +204,37 @@ export function App() {
     }
     try {
       setError(null);
+      setIsSending(true);
       const res = await sendPrompt({
         accountId: activeAccount.id,
         model: activeAccount.defaultModel,
-        prompt
+        prompt,
+        stream: streamEnabled
       });
       setResultText(res.responseText);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send prompt failed");
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function onStopPrompt() {
+    if (!activeAccount) return;
+    try {
+      await stopPrompt(activeAccount.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Stop failed");
+    }
+  }
+
+  async function onToggleLock(accountId: string, enabled: boolean) {
+    try {
+      await setAccountEnabled(accountId, enabled);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Toggle lock failed");
     }
   }
 
@@ -319,6 +353,7 @@ export function App() {
                     onSelectAccount={setActiveAccountId}
                     onOpenTab={onOpenTab}
                     onDeleteAccount={onDeleteAccount}
+                    onToggleLock={onToggleLock}
                   />
                 </Suspense>
               )
@@ -333,9 +368,13 @@ export function App() {
                     activeAccountId={activeAccount?.id}
                     prompt={prompt}
                     resultText={resultText}
+                    isSending={isSending}
+                    streamEnabled={streamEnabled}
+                    onToggleStream={setStreamEnabled}
                     onChangeAccount={setActiveAccountId}
                     onChangePrompt={setPrompt}
                     onSendPrompt={onSendPrompt}
+                    onStopPrompt={onStopPrompt}
                   />
                 </Suspense>
               )

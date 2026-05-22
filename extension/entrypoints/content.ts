@@ -178,6 +178,22 @@ function hasLoadingIndicator(): boolean {
   return false;
 }
 
+function clickStopButton(): boolean {
+  for (const sel of LOADING_SELECTORS) {
+    const btn = document.querySelector(sel);
+    if (!(btn instanceof HTMLElement)) continue;
+    if (!isNodeVisible(btn)) continue;
+    btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    btn.click();
+    return true;
+  }
+  return false;
+}
+
 function isPromptSubmitted(prevCount: number, originalPrompt: string): { ok: boolean; reason: string } {
   const current = messageContentCount();
   if (current > prevCount) return { ok: true, reason: "message-content increased" };
@@ -193,11 +209,42 @@ function isPromptSubmitted(prevCount: number, originalPrompt: string): { ok: boo
   return { ok: false, reason: "waiting submit confirmation" };
 }
 
+const NOISE_SELECTORS = [
+  "button",
+  ".code-block-decoration",
+  ".message-content-footer",
+  ".message-actions",
+  ".response-actions",
+  ".buttons",
+  ".sr-only",
+  ".visually-hidden",
+  ".cdk-visually-hidden",
+  "[aria-hidden='true']"
+].join(",");
+
+const SR_LABEL_PREFIX_RE =
+  /^\s*Gemini\s+(?:đã\s+nói|said)\s*[:：]?\s*/i;
+
 function extractCleanText(node: Element): string {
   const clone = node.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll(".code-block-decoration, .buttons, button, .message-content-footer").forEach((w) => w.remove());
-  clone.querySelectorAll("response-element:not(:has(code-block, pre, code))").forEach((w) => w.remove());
-  return (clone.innerText || clone.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+  clone.querySelectorAll(NOISE_SELECTORS).forEach((w) => w.remove());
+  // Keep <response-element> — for plain-text responses it IS the content wrapper.
+  return (clone.innerText || clone.textContent || "")
+    .replace(SR_LABEL_PREFIX_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function pickInnerResponseNode(root: Element): Element {
+  return (
+    root.querySelector("div[class*='markdown-main-panel']") ||
+    root.querySelector("div[class*='markdown']") ||
+    root.querySelector(".markdown") ||
+    root.querySelector("[data-test-id='response-content-element']") ||
+    root.querySelector(".response-content") ||
+    root.querySelector("message-content") ||
+    root
+  );
 }
 
 function latestResponseText(): string {
@@ -205,7 +252,8 @@ function latestResponseText(): string {
     const list = document.querySelectorAll(selector);
     if (list.length === 0) continue;
     const last = list.item(list.length - 1);
-    const text = extractCleanText(last);
+    const inner = pickInnerResponseNode(last);
+    const text = extractCleanText(inner);
     if (text) return text;
   }
   return "";
@@ -249,52 +297,249 @@ function detectGeminiAccountPreview() {
   };
 }
 
-async function waitForPromptSubmission(prevCount: number, originalPrompt: string): Promise<void> {
-  let lastReason = "";
-  for (let second = 1; second <= 20; second += 1) {
-    await sleep(800);
-    const check = isPromptSubmitted(prevCount, originalPrompt);
-    lastReason = check.reason;
-    if (check.ok) return;
-    if (second <= 8 || second === 10 || second === 12 || second === 14 || second === 16) {
-      if (!clickSendButton()) pressEnterFallback();
-    }
-  }
-  throw new Error(`Send not confirmed after submission checks (${lastReason})`);
+/**
+ * Wait for a DOM condition to become true. Uses MutationObserver instead of
+ * setTimeout polling — important when the Gemini tab is in the background,
+ * because Chrome throttles setTimeout/setInterval to ~1/min but does NOT
+ * throttle MutationObserver callbacks.
+ */
+interface WaitOptions {
+  onTick?: () => void;
+  /**
+   * Require the condition to remain true for this many ms of DOM quiet
+   * before resolving. Useful when the underlying content is streaming and
+   * we should not commit the first transient pass.
+   */
+  stableForMs?: number;
 }
 
-async function waitForResponseStable(prevCount: number): Promise<string> {
-  for (let i = 0; i < 60; i += 1) {
-    if (messageContentCount() > prevCount) break;
-    if (latestResponseText().trim()) break;
-    await sleep(1000);
-  }
-  for (let i = 0; i < 60; i += 1) {
-    if (!hasLoadingIndicator()) break;
-    await sleep(1000);
-  }
+function waitForDomCondition<T>(
+  test: () => T | null,
+  timeoutMs: number,
+  description: string,
+  options: WaitOptions = {}
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const { onTick, stableForMs = 0 } = options;
+    let settled = false;
+    let stableTimer: ReturnType<typeof setTimeout> | undefined;
 
-  let latest = "";
-  let stableRounds = 0;
-  for (let i = 0; i < 120; i += 1) {
-    await sleep(1000);
-    const text = latestResponseText();
-    if (!text) continue;
-    if (text !== latest) {
-      latest = text;
-      stableRounds = 0;
-      continue;
+    const finishWith = (value: T) => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      resolve(value);
+    };
+
+    const scheduleStable = (value: T) => {
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      if (stableForMs <= 0) {
+        finishWith(value);
+        return;
+      }
+      stableTimer = setTimeout(() => {
+        // Re-check at the end of the quiet window in case content shifted.
+        const fresh = test();
+        if (fresh !== null) finishWith(fresh);
+        else stableTimer = undefined;
+      }, stableForMs);
+    };
+
+    const tryFinish = () => {
+      if (settled) return;
+      if (onTick) {
+        try {
+          onTick();
+        } catch {
+          // ignore tick side-effect errors
+        }
+      }
+      const value = test();
+      if (value !== null) {
+        scheduleStable(value);
+      } else if (stableTimer !== undefined) {
+        // Condition flipped back to false — restart the stability window.
+        clearTimeout(stableTimer);
+        stableTimer = undefined;
+      }
+    };
+
+    const observer = new MutationObserver(tryFinish);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["aria-label", "aria-disabled", "disabled", "class", "loading"]
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      reject(new Error(`${description} timeout`));
+    }, timeoutMs);
+    tryFinish();
+  });
+}
+
+async function waitForPromptSubmission(prevCount: number, originalPrompt: string): Promise<void> {
+  let clickAttempts = 0;
+  await waitForDomCondition(
+    () => (isPromptSubmitted(prevCount, originalPrompt).ok ? true : null),
+    25_000,
+    "submission",
+    {
+      onTick: () => {
+        // Re-click periodically while observer keeps firing — capped attempts
+        // so we don't spam if Gemini is genuinely working on it.
+        if (clickAttempts < 4 && !isPromptSubmitted(prevCount, originalPrompt).ok) {
+          if (!clickSendButton()) pressEnterFallback();
+          clickAttempts += 1;
+        }
+      }
     }
-    stableRounds += 1;
-    if (stableRounds >= 3) return latest;
+  );
+}
+
+async function waitForResponseStable(_prevCount: number): Promise<string> {
+  // MutationObserver-driven: resolve when Gemini stops generating
+  // (loading indicator gone) AND has text AND nothing changed for ~2s.
+  // The stability window protects against catching the first streamed
+  // chunk while Gemini briefly drops the loading indicator between updates.
+  const { responseText } = await waitForDomCondition<{ responseText: string }>(
+    () => {
+      if (hasLoadingIndicator()) return null;
+      const text = latestResponseText().trim();
+      if (!text) return null;
+      return { responseText: text };
+    },
+    180_000,
+    "response",
+    { stableForMs: 2000 }
+  );
+  return responseText;
+}
+
+// ---------------------------------------------------------------------------
+// Stream interceptor bridge.
+// stream-intercept.content.ts (MAIN world) patches window.fetch and posts
+// structured events to window when Gemini's StreamGenerate fetch produces
+// streaming data. We listen for those events here (isolated world) and
+// expose a Promise-based API to consume the latest active stream.
+// ---------------------------------------------------------------------------
+
+interface StreamState {
+  requestId: string | null;
+  text: string;
+  status: string;
+  done: boolean;
+  errored: boolean;
+  doneResolvers: Array<(text: string) => void>;
+}
+
+const streamState: StreamState = {
+  requestId: null,
+  text: "",
+  status: "",
+  done: false,
+  errored: false,
+  doneResolvers: []
+};
+
+function resetStreamState(): void {
+  streamState.requestId = null;
+  streamState.text = "";
+  streamState.status = "";
+  streamState.done = false;
+  streamState.errored = false;
+  // Note: we keep doneResolvers because callers may have already queued
+  // a wait before reset (e.g. when resetting at the very start of send).
+}
+
+function fireDoneResolvers(text: string): void {
+  const resolvers = streamState.doneResolvers.slice();
+  streamState.doneResolvers.length = 0;
+  for (const r of resolvers) {
+    try {
+      r(text);
+    } catch {
+      // ignore consumer errors
+    }
   }
-  if (latest.trim()) return latest;
-  throw new Error("Timeout waiting Gemini response");
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || (data as any).__geminiStream !== true) return;
+  const payload = data as {
+    type: string;
+    requestId: string;
+    text?: string;
+    delta?: string;
+    status?: string;
+    error?: string;
+  };
+
+  switch (payload.type) {
+    case "start":
+      streamState.requestId = payload.requestId;
+      streamState.text = "";
+      streamState.status = "";
+      streamState.done = false;
+      streamState.errored = false;
+      break;
+    case "delta":
+      streamState.requestId = streamState.requestId || payload.requestId;
+      if (typeof payload.text === "string") streamState.text = payload.text;
+      break;
+    case "status":
+      if (typeof payload.status === "string") streamState.status = payload.status;
+      break;
+    case "error":
+      streamState.errored = true;
+      streamState.done = true;
+      fireDoneResolvers(streamState.text);
+      break;
+    case "done":
+      if (typeof payload.text === "string" && payload.text) streamState.text = payload.text;
+      streamState.done = true;
+      fireDoneResolvers(streamState.text);
+      break;
+  }
+});
+
+function waitForStreamDone(timeoutMs: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (streamState.done) {
+      resolve(streamState.text.trim() ? streamState.text : null);
+      return;
+    }
+    let resolved = false;
+    const onDone = (text: string) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve(text.trim() ? text : null);
+    };
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      const idx = streamState.doneResolvers.indexOf(onDone);
+      if (idx >= 0) streamState.doneResolvers.splice(idx, 1);
+      resolve(null);
+    }, timeoutMs);
+    streamState.doneResolvers.push(onDone);
+  });
 }
 
 async function sendGeminiPrompt(prompt: string): Promise<{ responseText: string }> {
   const trimmed = prompt.trim();
   if (!trimmed) throw new Error("Prompt is empty");
+  resetStreamState();
   const prevCount = messageContentCount();
   const injected = setComposerPrompt(trimmed);
   if (!injected) throw new Error("Gemini composer not found");
@@ -302,11 +547,35 @@ async function sendGeminiPrompt(prompt: string): Promise<{ responseText: string 
   await sleep(150);
   if (!clickSendButton()) pressEnterFallback();
   await waitForPromptSubmission(prevCount, trimmed);
-  const responseText = await waitForResponseStable(prevCount);
-  if (!responseText.trim()) {
+
+  // Race the stream interceptor against the DOM-stable detector. The stream
+  // path is preferred when Gemini routes through fetch(StreamGenerate); the
+  // DOM path is a safety net for cases the patch missed (XHR, future format
+  // change, etc).
+  const streamFirst = waitForStreamDone(180_000).then((text) =>
+    text ? { source: "stream", text } : null
+  );
+  const domFirst = waitForResponseStable(prevCount).then((text) => ({
+    source: "dom",
+    text
+  }));
+
+  let winner: { source: string; text: string } | null = null;
+  try {
+    winner = await Promise.any([
+      streamFirst.then((r) => (r ? r : Promise.reject(new Error("no stream")))),
+      domFirst
+    ]);
+  } catch (err) {
+    if (err instanceof AggregateError) {
+      throw err.errors[err.errors.length - 1] || new Error("No response from Gemini");
+    }
+    throw err;
+  }
+  if (!winner || !winner.text.trim()) {
     throw new Error("Gemini returned empty response");
   }
-  return { responseText };
+  return { responseText: winner.text };
 }
 
 async function executeGeminiCommand(payload: {
@@ -354,6 +623,11 @@ export default defineContentScript({
             error: error instanceof Error ? error.message : "Cannot detect Gemini account info"
           });
         }
+        return true;
+      }
+      if (message?.type === "gemini.chat.stop") {
+        const clicked = clickStopButton();
+        sendResponse({ ok: true, clicked });
         return true;
       }
       if (message?.type === "gemini.command.execute") {

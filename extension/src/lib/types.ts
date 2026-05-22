@@ -70,6 +70,7 @@ export interface SendPromptRequest {
   accountId: string;
   model: string;
   prompt: string;
+  stream?: boolean;
 }
 
 export interface ChatResult {

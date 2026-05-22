@@ -184,6 +184,43 @@ class BackendWsClient {
 
 const backend = new BackendWsClient();
 const MANAGED_GROUP_TITLE = "Extract Token";
+const CHAT_RELOAD_THRESHOLD = 5;
+const accountChatCounts = new Map<string, number>();
+
+function withPageIdNone(pageRoot: string): string {
+  try {
+    const url = new URL(pageRoot);
+    url.searchParams.set("pageId", "none");
+    return url.toString();
+  } catch {
+    const sep = pageRoot.includes("?") ? "&" : "?";
+    return `${pageRoot}${sep}pageId=none`;
+  }
+}
+
+async function reloadAccountToRoot(accountId: string): Promise<void> {
+  const tabs = await getTabs();
+  const mapped = tabs.find((item) => item.accountId === accountId);
+  if (!mapped) return;
+  const state = await getStateFromBackend().catch(() => null);
+  const account = state?.accounts.find((item) => item.id === accountId);
+  const pageRoot = account?.pageRoot || mapped.url;
+  if (!pageRoot) return;
+  const targetUrl = withPageIdNone(pageRoot);
+  try {
+    await chrome.tabs.update(mapped.tabId, { url: targetUrl });
+    await setAccountTab({
+      accountId,
+      tabId: mapped.tabId,
+      windowId: mapped.windowId,
+      url: targetUrl,
+      updatedAt: new Date().toISOString()
+    });
+    await waitForTabReady(mapped.tabId);
+  } catch {
+    // tab may have been closed; ignore
+  }
+}
 
 function isClosedMessageChannelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -373,6 +410,65 @@ async function waitForTabReady(tabId: number, timeoutMs = 12000): Promise<void> 
   }
 }
 
+async function pingGeminiTab(tabId: number, timeoutMs = 2500): Promise<boolean> {
+  try {
+    const result = await Promise.race([
+      sendMessageToGeminiTab(tabId, {
+        type: "gemini.command.execute",
+        payload: { command: "ping" }
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+    ]);
+    return Boolean(result && (result as any).ok);
+  } catch {
+    return false;
+  }
+}
+
+async function recreateAccountTab(accountId: string): Promise<number> {
+  const tabs = await getTabs();
+  const mapped = tabs.find((item) => item.accountId === accountId);
+  if (mapped) {
+    try {
+      await chrome.tabs.remove(mapped.tabId);
+    } catch {
+      // tab may already be gone
+    }
+    await removeAccountTab(accountId);
+  }
+  return ensureGeminiTabWithOptions(accountId, { activate: false });
+}
+
+async function ensureResponsiveAccountTab(accountId: string): Promise<number> {
+  let tabId = await ensureGeminiTabWithOptions(accountId, { activate: false });
+  await waitForTabReady(tabId);
+  if (await pingGeminiTab(tabId, 2500)) return tabId;
+
+  // First attempt unresponsive — recycle the tab once.
+  tabId = await recreateAccountTab(accountId);
+  await waitForTabReady(tabId, 15000);
+  if (await pingGeminiTab(tabId, 4000)) return tabId;
+  throw new Error("Gemini tab is unresponsive (ping failed after recreate)");
+}
+
+/**
+ * Race a promise against a deadline. Used to bail out when the Gemini tab is
+ * stuck (e.g. prompt sat in composer with no submission, or response never
+ * arrives). On timeout the caller is expected to recycle the tab.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} deadline exceeded (${ms}ms)`)),
+      ms
+    );
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 async function getStateFromBackend(): Promise<Pick<ExtensionState, "accounts" | "history" | "busy">> {
   const data = await backend.request<{
     accounts: any[];
@@ -416,15 +512,39 @@ async function composeState(): Promise<ExtensionState> {
   };
 }
 
+const SEND_HARD_DEADLINE_MS = 90_000;
+
+async function performSend(tabId: number, prompt: string): Promise<any> {
+  return withDeadline(
+    sendMessageToGeminiTab(tabId, {
+      type: "gemini.chat.send",
+      payload: { prompt }
+    }),
+    SEND_HARD_DEADLINE_MS,
+    "gemini.chat.send"
+  );
+}
+
 async function sendPrompt(payload: { accountId: string; model: string; prompt: string }) {
-  const tabId = await ensureGeminiTabWithOptions(payload.accountId, { activate: false });
-  await waitForTabReady(tabId);
+  let tabId = await ensureResponsiveAccountTab(payload.accountId);
   await backend.request("busy.set", { account_id: payload.accountId, busy: true });
   try {
-    const result = await sendMessageToGeminiTab(tabId, {
-      type: "gemini.chat.send",
-      payload: { prompt: payload.prompt }
-    });
+    let result: any;
+    try {
+      result = await performSend(tabId, payload.prompt);
+    } catch (firstErr) {
+      // Tab is stuck (deadline) OR channel closed OR content threw — recycle
+      // the tab and retry once with a fresh page so we don't sit on a hung
+      // composer. We do NOT activate the tab automatically.
+      try {
+        await sendMessageToGeminiTab(tabId, { type: "gemini.chat.stop" });
+      } catch {
+        // best effort
+      }
+      tabId = await recreateAccountTab(payload.accountId);
+      await waitForTabReady(tabId, 15000);
+      result = await performSend(tabId, payload.prompt);
+    }
     if (result?.error) {
       throw new Error(String(result.error));
     }
@@ -444,10 +564,45 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
       role: "assistant",
       content: responseText
     });
+    const next = (accountChatCounts.get(payload.accountId) || 0) + 1;
+    if (next >= CHAT_RELOAD_THRESHOLD) {
+      accountChatCounts.set(payload.accountId, 0);
+      // fire-and-forget reload so caller still gets the current response immediately
+      reloadAccountToRoot(payload.accountId).catch(() => {});
+    } else {
+      accountChatCounts.set(payload.accountId, next);
+    }
     return { accountId: payload.accountId, model: payload.model, responseText };
   } finally {
     await backend.request("busy.set", { account_id: payload.accountId, busy: false });
   }
+}
+
+async function stopPromptForAccount(accountId: string): Promise<void> {
+  const tabs = await getTabs();
+  const mapped = tabs.find((item) => item.accountId === accountId);
+  if (!mapped) return;
+  try {
+    await sendMessageToGeminiTab(mapped.tabId, { type: "gemini.chat.stop" });
+  } catch {
+    // tab missing — best effort
+  }
+  await backend.request("busy.set", { account_id: accountId, busy: false }).catch(() => {});
+}
+
+async function setAccountEnabled(accountId: string, enabled: boolean): Promise<void> {
+  const state = await getStateFromBackend();
+  const account = state.accounts.find((item) => item.id === accountId);
+  if (!account) throw new Error(`Account not found: ${accountId}`);
+  await backend.request("account.upsert", {
+    id: account.id,
+    provider: account.provider,
+    user_index: account.userIndex,
+    page_root: account.pageRoot,
+    label: account.label,
+    enabled,
+    default_model: account.defaultModel
+  });
 }
 
 async function handleBackendControllerRequest(type: string, payload: WsPayload): Promise<unknown> {
@@ -472,22 +627,57 @@ async function handleBackendControllerRequest(type: string, payload: WsPayload):
   };
 }
 
-async function sendPromptViaOpenAiApi(payload: { accountId: string; model: string; prompt: string }) {
+async function sendPromptViaOpenAiApi(payload: {
+  accountId: string;
+  model: string;
+  prompt: string;
+  stream?: boolean;
+}) {
   const cfg = backend.getStatus();
+  const wantStream = Boolean(payload.stream);
   const response = await fetch(`http://${cfg.host}:${cfg.port}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: payload.model,
-      stream: false,
+      stream: wantStream,
       account_id: payload.accountId,
       messages: [{ role: "user", content: payload.prompt }]
     })
   });
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
     throw new Error(String(data?.error || response.statusText));
   }
+  if (wantStream && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let acc = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const obj = JSON.parse(data);
+          const piece = obj?.choices?.[0]?.delta?.content;
+          if (typeof piece === "string") acc += piece;
+        } catch {
+          // skip malformed chunk
+        }
+      }
+    }
+    if (!acc.trim()) throw new Error("Streamed response content is empty");
+    return { accountId: payload.accountId, model: payload.model, responseText: acc };
+  }
+  const data = await response.json().catch(() => ({}));
   const responseText = String(data?.choices?.[0]?.message?.content || "");
   if (!responseText.trim()) {
     throw new Error("OpenAI response content is empty");
@@ -539,6 +729,7 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
     case "account.delete":
       await backend.request("account.delete", { account_id: message.payload.accountId });
       await removeAccountTab(message.payload.accountId);
+      accountChatCounts.delete(message.payload.accountId);
       return { ok: true };
     case "account.detect-root": {
       const preview = await detectGeminiRootFromActiveTab();
@@ -560,8 +751,7 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
       return { ok: true, tabId };
     }
     case "tab.command.execute": {
-      const tabId = await ensureGeminiTabWithOptions(message.payload.accountId, { activate: false });
-      await waitForTabReady(tabId);
+      const tabId = await ensureResponsiveAccountTab(message.payload.accountId);
       const exec = await sendMessageToGeminiTab(tabId, {
         type: "gemini.command.execute",
         payload: {
@@ -581,6 +771,14 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
     case "openai.chat.send": {
       const result = await sendPromptViaOpenAiApi(message.payload);
       return { ok: true, result };
+    }
+    case "chat.stop": {
+      await stopPromptForAccount(message.payload.accountId);
+      return { ok: true };
+    }
+    case "account.set-enabled": {
+      await setAccountEnabled(message.payload.accountId, message.payload.enabled);
+      return { ok: true, state: await composeState() };
     }
     default:
       return { ok: false, error: "Unsupported message type" };

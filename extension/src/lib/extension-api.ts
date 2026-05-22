@@ -71,6 +71,7 @@ export async function sendPrompt(payload: {
   accountId: string;
   model: string;
   prompt: string;
+  stream?: boolean;
 }): Promise<ChatResult> {
   const res = await send({ type: "openai.chat.send", payload });
   if (!res.ok || !("result" in res)) throw new Error((res as any).error || "openai.chat.send failed");
