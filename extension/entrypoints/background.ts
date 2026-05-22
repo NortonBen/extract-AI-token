@@ -184,41 +184,26 @@ class BackendWsClient {
 
 const backend = new BackendWsClient();
 const MANAGED_GROUP_TITLE = "Extract Token";
-const CHAT_RELOAD_THRESHOLD = 5;
-const accountChatCounts = new Map<string, number>();
 
-function withPageIdNone(pageRoot: string): string {
-  try {
-    const url = new URL(pageRoot);
-    url.searchParams.set("pageId", "none");
-    return url.toString();
-  } catch {
-    const sep = pageRoot.includes("?") ? "&" : "?";
-    return `${pageRoot}${sep}pageId=none`;
-  }
-}
-
-async function reloadAccountToRoot(accountId: string): Promise<void> {
+/**
+ * Close the Gemini tab mapped to this account and forget the mapping.
+ * Called after every successful chat to keep each run on a fresh page —
+ * avoids the "send not confirmed" / stale composer / accumulated DOM bugs
+ * that show up after several chats on the same tab.
+ */
+async function closeAccountTab(accountId: string): Promise<void> {
   const tabs = await getTabs();
   const mapped = tabs.find((item) => item.accountId === accountId);
   if (!mapped) return;
-  const state = await getStateFromBackend().catch(() => null);
-  const account = state?.accounts.find((item) => item.id === accountId);
-  const pageRoot = account?.pageRoot || mapped.url;
-  if (!pageRoot) return;
-  const targetUrl = withPageIdNone(pageRoot);
   try {
-    await chrome.tabs.update(mapped.tabId, { url: targetUrl });
-    await setAccountTab({
-      accountId,
-      tabId: mapped.tabId,
-      windowId: mapped.windowId,
-      url: targetUrl,
-      updatedAt: new Date().toISOString()
-    });
-    await waitForTabReady(mapped.tabId);
+    await chrome.tabs.remove(mapped.tabId);
   } catch {
-    // tab may have been closed; ignore
+    // tab may already be gone — ignore
+  }
+  try {
+    await removeAccountTab(accountId);
+  } catch {
+    // best effort
   }
 }
 
@@ -564,14 +549,9 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
       role: "assistant",
       content: responseText
     });
-    const next = (accountChatCounts.get(payload.accountId) || 0) + 1;
-    if (next >= CHAT_RELOAD_THRESHOLD) {
-      accountChatCounts.set(payload.accountId, 0);
-      // fire-and-forget reload so caller still gets the current response immediately
-      reloadAccountToRoot(payload.accountId).catch(() => {});
-    } else {
-      accountChatCounts.set(payload.accountId, next);
-    }
+    // Close the tab after every successful chat so the next prompt starts on
+    // a clean page. Fire-and-forget — the caller already has the response.
+    closeAccountTab(payload.accountId).catch(() => {});
     return { accountId: payload.accountId, model: payload.model, responseText };
   } finally {
     await backend.request("busy.set", { account_id: payload.accountId, busy: false });
@@ -729,7 +709,6 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
     case "account.delete":
       await backend.request("account.delete", { account_id: message.payload.accountId });
       await removeAccountTab(message.payload.accountId);
-      accountChatCounts.delete(message.payload.accountId);
       return { ok: true };
     case "account.detect-root": {
       const preview = await detectGeminiRootFromActiveTab();
