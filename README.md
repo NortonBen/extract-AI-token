@@ -81,9 +81,9 @@ Works in **Chromium-based** browsers that support **Manifest V3** and the **Side
 
 | OS | Tray | Backend binary (bundled / build) |
 |----|------|----------------------------------|
-| **macOS** | Menu bar icon | `macos-backend` / `Resources/backend` |
-| **Windows** | Notification area | `windows-backend.exe` next to the app |
-| **Linux** | System tray (depends on desktop environment) | `linux-backend` next to the app |
+| **macOS** | Menu bar icon | `build/macos-extract-ai-token-backend` / `Resources/extract-ai-token-backend` |
+| **Windows** | Notification area | `extract-ai-token-backend.exe` next to the app |
+| **Linux** | System tray (depends on desktop environment) | `extract-ai-token-backend` next to the app |
 
 On **Linux**, **Copy API URL** from the tray may need `wl-copy`, `xclip`, or `xsel` installed if the clipboard shortcut fails.
 
@@ -117,8 +117,8 @@ On tagged releases (`v*.*.*`), pick the asset for your OS:
 | `extract-ai-token-backend-linux.tar.gz` | CLI `extract-ai-token` |
 | `extract-ai-token-v*-macos.dmg` | macOS installer (drag app to Applications) |
 | `extract-ai-token-v*-macos.zip` | macOS `.app` zip (alternative) |
-| `extract-ai-token-windows.zip` | Windows app folder + `backend.exe` |
-| `extract-ai-token-linux.tar.gz` | Linux `bundle/` + `backend` |
+| `extract-ai-token-windows.zip` | Windows app folder + `extract-ai-token-backend.exe` |
+| `extract-ai-token-linux.tar.gz` | Linux `bundle/` + `extract-ai-token-backend` |
 
 Extension zip is published separately (`extension-chrome`).
 
@@ -146,7 +146,7 @@ Maintainers: see [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) to enable **Deve
 **Windows**
 
 1. Unzip `extract-ai-token-windows.zip`.
-2. Run **`app.exe`** from the `Release` folder (same folder contains `backend.exe`).
+2. Run **`app.exe`** from the `Release` folder (same folder contains `extract-ai-token-backend.exe`).
 3. Use the **system tray** icon → Dashboard / Settings.
 
 **Linux**
@@ -155,7 +155,7 @@ Maintainers: see [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) to enable **Deve
 2. From the `bundle` folder:
 
    ```bash
-   chmod +x app backend
+   chmod +x app extract-ai-token-backend
    ./app
    ```
 
@@ -168,9 +168,9 @@ Maintainers: see [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) to enable **Deve
 cd backend && cargo build --release
 cd ..
 mkdir -p build
-cp backend/target/release/backend build/macos-backend          # macOS
-# cp backend/target/release/backend.exe build/windows-backend.exe  # Windows
-# cp backend/target/release/backend build/linux-backend            # Linux
+cp backend/target/release/backend build/macos-extract-ai-token-backend          # macOS
+# cp backend/target/release/backend.exe build/windows-extract-ai-token-backend.exe  # Windows
+# cp backend/target/release/backend build/linux-extract-ai-token-backend            # Linux
 
 # 2) Run the Flutter app
 cd app

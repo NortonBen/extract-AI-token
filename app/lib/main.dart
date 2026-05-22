@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform, ProcessSignal;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -167,6 +168,15 @@ Future<void> main() async {
   if (!kIsWeb) {
     await windowManager.ensureInitialized();
     await windowManager.setTitle('Extract AI Token');
+  }
+
+  if (!kIsWeb &&
+      (Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
+    for (final signal in [ProcessSignal.sigint, ProcessSignal.sigterm]) {
+      signal.watch().listen((_) {
+        unawaited(AppState.instance.shutdown());
+      });
+    }
   }
 
   await AppState.instance.init();

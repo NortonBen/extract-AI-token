@@ -45,7 +45,7 @@ Aliases supported locally: `CERTIFICATE_BASE64`, `CERTIFICATE_PATH` (path to `.p
 
 ```bash
 cd backend && cargo build --release
-cp target/release/backend ../build/macos-backend
+cp target/release/backend ../build/macos-extract-ai-token-backend
 
 cd app
 flutter build macos --release

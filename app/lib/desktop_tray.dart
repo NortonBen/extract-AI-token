@@ -153,7 +153,11 @@ class DesktopTray {
           MenuItem(
             key: 'quit',
             label: 'Quit',
-            onClick: (_) => exit(0),
+            onClick: (_) async {
+              await s.shutdown();
+              await DesktopTray.instance.dispose();
+              exit(0);
+            },
           ),
         ],
       ),

@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'backend_binary.dart';
 import 'log_format.dart';
 
 const _kPortKey = 'backend_port';
@@ -110,10 +111,14 @@ class AppState extends ChangeNotifier {
   Future<void> stop() async {
     _healthTimer?.cancel();
     _dashboardTimer?.cancel();
+    _logNotifyDebounce?.cancel();
     await _launcher.stop();
     _setStatus(BackendStatus.stopped);
     dashboard = null;
   }
+
+  /// Stop backend before process exit (tray Quit, SIGINT/SIGTERM).
+  Future<void> shutdown() => stop();
 
   Future<void> restart() async {
     await stop();
@@ -339,31 +344,25 @@ class _BackendLauncher {
       }
     }
 
+    final name = backendBinaryFileName();
     throw Exception(
-      'Backend binary not found. Build: cargo build --release\n'
-      'Copy to build/${_devBinaryNames().first} or set AI_BROWSER_BACKEND_BIN.',
+      'Backend binary not found ($name). Build: cargo build --release\n'
+      'Copy to build/${devBackendBuildArtifact()} or set AI_BROWSER_BACKEND_BIN.',
     );
   }
 
-  List<String> _devBinaryNames() {
-    if (Platform.isMacOS) return ['macos-backend'];
-    if (Platform.isWindows) return ['windows-backend.exe', 'windows-backend'];
-    if (Platform.isLinux) return ['linux-backend'];
-    return ['backend'];
-  }
+  List<String> _devBinaryNames() => [devBackendBuildArtifact()];
 
   String? _bundledBinary() {
     try {
+      final fileName = backendBinaryFileName();
       final exeDir = File(Platform.resolvedExecutable).parent.path;
       if (Platform.isMacOS) {
         final res = p.join(File(Platform.resolvedExecutable).parent.parent.path, 'Resources');
-        final bin = p.join(res, 'backend');
+        final bin = p.join(res, fileName);
         if (File(bin).existsSync()) return bin;
-      } else if (Platform.isWindows) {
-        final bin = p.join(exeDir, 'backend.exe');
-        if (File(bin).existsSync()) return bin;
-      } else if (Platform.isLinux) {
-        final bin = p.join(exeDir, 'backend');
+      } else if (Platform.isWindows || Platform.isLinux) {
+        final bin = p.join(exeDir, fileName);
         if (File(bin).existsSync()) return bin;
       }
     } catch (_) {}

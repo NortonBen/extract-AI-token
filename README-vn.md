@@ -81,9 +81,9 @@ Dùng trên trình duyệt **Chromium** hỗ trợ **Manifest V3** và **Side Pa
 
 | HĐH | Tray | Binary backend (đóng gói / build) |
 |-----|------|-------------------------------------|
-| **macOS** | Icon menu bar | `macos-backend` / `Resources/backend` |
-| **Windows** | Khay thông báo (notification area) | `windows-backend.exe` cạnh app |
-| **Linux** | System tray (tùy môi trường desktop) | `linux-backend` cạnh app |
+| **macOS** | Icon menu bar | `build/macos-extract-ai-token-backend` / `Resources/extract-ai-token-backend` |
+| **Windows** | Khay thông báo (notification area) | `extract-ai-token-backend.exe` cạnh app |
+| **Linux** | System tray (tùy môi trường desktop) | `extract-ai-token-backend` cạnh app |
 
 Trên **Linux**, **Copy API URL** từ tray có thể cần cài `wl-copy`, `xclip` hoặc `xsel` nếu sao chép clipboard thất bại.
 
@@ -117,8 +117,8 @@ Trên bản release có tag `v*.*.*`, chọn file đúng hệ điều hành:
 | `extract-ai-token-backend-linux.tar.gz` | CLI `extract-ai-token` |
 | `extract-ai-token-v*-macos.dmg` | Bộ cài macOS (kéo app vào Applications) |
 | `extract-ai-token-v*-macos.zip` | `.app` dạng zip (tùy chọn) |
-| `extract-ai-token-windows.zip` | Thư mục app Windows + `backend.exe` |
-| `extract-ai-token-linux.tar.gz` | Thư mục `bundle/` Linux + `backend` |
+| `extract-ai-token-windows.zip` | Thư mục app Windows + `extract-ai-token-backend.exe` |
+| `extract-ai-token-linux.tar.gz` | Thư mục `bundle/` Linux + `extract-ai-token-backend` |
 
 Gói extension Chrome đăng riêng (`extension-chrome`).
 
@@ -146,7 +146,7 @@ Người phát hành: xem [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) để b
 **Windows**
 
 1. Giải nén `extract-ai-token-windows.zip`.
-2. Chạy **`app.exe`** trong thư mục `Release` (cùng thư mục có `backend.exe`).
+2. Chạy **`app.exe`** trong thư mục `Release` (cùng thư mục có `extract-ai-token-backend.exe`).
 3. Dùng icon **system tray** → Dashboard / Settings.
 
 **Linux**
@@ -155,7 +155,7 @@ Người phát hành: xem [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) để b
 2. Trong thư mục `bundle`:
 
    ```bash
-   chmod +x app backend
+   chmod +x app extract-ai-token-backend
    ./app
    ```
 
@@ -168,9 +168,9 @@ Người phát hành: xem [docs/MACOS_SIGNING.md](docs/MACOS_SIGNING.md) để b
 cd backend && cargo build --release
 cd ..
 mkdir -p build
-cp backend/target/release/backend build/macos-backend          # macOS
-# cp backend/target/release/backend.exe build/windows-backend.exe  # Windows
-# cp backend/target/release/backend build/linux-backend            # Linux
+cp backend/target/release/backend build/macos-extract-ai-token-backend          # macOS
+# cp backend/target/release/backend.exe build/windows-extract-ai-token-backend.exe  # Windows
+# cp backend/target/release/backend build/linux-extract-ai-token-backend            # Linux
 
 # 2) Chạy app Flutter
 cd app

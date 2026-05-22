@@ -76,19 +76,19 @@ jobs:
           lipo -create \
             backend/target/aarch64-apple-darwin/release/backend \
             backend/target/x86_64-apple-darwin/release/backend \
-            -output macos-backend
-          chmod +x macos-backend
+            -output macos-extract-ai-token-backend
+          chmod +x macos-extract-ai-token-backend
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-backend
-          path: macos-backend
+          path: macos-extract-ai-token-backend
 
       # Standalone backend artifact for users who only want the API binary.
       - name: Stage standalone backend zip (macOS)
         run: |
           mkdir -p out
-          cp macos-backend out/extract-ai-token
+          cp macos-extract-ai-token-backend out/extract-ai-token
           chmod +x out/extract-ai-token
           zip -j extract-ai-token-backend-macos.zip out/extract-ai-token
 
@@ -189,7 +189,7 @@ jobs:
           path: build/
 
       - name: Make backend executable
-        run: chmod +x build/macos-backend
+        run: chmod +x build/macos-extract-ai-token-backend
 
       - name: Flutter pub get
         run: flutter pub get
@@ -202,8 +202,8 @@ jobs:
       - name: Bundle backend into .app
         run: |
           APP=$(ls -dt app/build/macos/Build/Products/Release/*.app | head -1)
-          cp build/macos-backend "$APP/Contents/Resources/backend"
-          chmod +x "$APP/Contents/Resources/backend"
+          cp build/macos-extract-ai-token-backend "$APP/Contents/Resources/extract-ai-token-backend"
+          chmod +x "$APP/Contents/Resources/extract-ai-token-backend"
 
       - name: Package macOS (sign if certificate, DMG + zip)
         run: |
@@ -264,7 +264,7 @@ jobs:
         shell: pwsh
         run: |
           $bundle = "app\build\windows\x64\runner\Release"
-          Copy-Item "build\backend.exe" "$bundle\backend.exe"
+          Copy-Item "build\backend.exe" "$bundle\extract-ai-token-backend.exe"
 
       - name: Archive bundle as zip
         shell: pwsh
@@ -309,7 +309,7 @@ jobs:
           path: build/
 
       - name: Make backend executable
-        run: chmod +x build/backend
+        run: chmod +x build/backend && cp build/backend build/extract-ai-token-backend && chmod +x build/extract-ai-token-backend
 
       - name: Flutter pub get
         run: flutter pub get
@@ -322,8 +322,8 @@ jobs:
       - name: Bundle backend next to executable
         run: |
           BUNDLE=app/build/linux/x64/release/bundle
-          cp build/backend "$BUNDLE/backend"
-          chmod +x "$BUNDLE/backend"
+          cp build/extract-ai-token-backend "$BUNDLE/extract-ai-token-backend"
+          chmod +x "$BUNDLE/extract-ai-token-backend"
 
       - name: Archive bundle as tar.gz
         run: |

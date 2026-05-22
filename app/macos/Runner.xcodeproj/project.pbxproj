@@ -423,7 +423,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nREPO_ROOT=\"${SRCROOT}/../..\"\nBACKEND_SRC=\"${REPO_ROOT}/build/macos-backend\"\nRES=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nif [ ! -f \"$BACKEND_SRC\" ]; then echo \"error: Missing $BACKEND_SRC. Run: cargo build --manifest-path backend/Cargo.toml --release && mkdir -p build && cp backend/target/release/backend build/macos-backend\" >&2; exit 1; fi\nmkdir -p \"$RES\"\ncp -f \"$BACKEND_SRC\" \"$RES/backend\"\nchmod +x \"$RES/backend\"\necho \"Copied backend to $RES/backend\"\n";
+			shellScript = "set -e\nREPO_ROOT=\"${SRCROOT}/../..\"\nBACKEND_SRC=\"${REPO_ROOT}/build/macos-extract-ai-token-backend\"\nBACKEND_DST=\"extract-ai-token-backend\"\nRES=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nif [ ! -f \"$BACKEND_SRC\" ]; then echo \"error: Missing $BACKEND_SRC. Run: scripts/build-backend.sh or: cargo build --manifest-path backend/Cargo.toml --release && mkdir -p build && cp backend/target/release/backend build/macos-extract-ai-token-backend\" >&2; exit 1; fi\nmkdir -p \"$RES\"\ncp -f \"$BACKEND_SRC\" \"$RES/$BACKEND_DST\"\nchmod +x \"$RES/$BACKEND_DST\"\necho \"Copied backend to $RES/$BACKEND_DST\"\n";
 		};
 		E3C42CA2FE7E7F5E10D780E5 /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;

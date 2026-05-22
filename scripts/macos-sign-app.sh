@@ -58,7 +58,7 @@ if [[ -d "$APP_PATH/Contents/PlugIns" ]]; then
   done
 fi
 
-BACKEND="$APP_PATH/Contents/Resources/backend"
+BACKEND="$APP_PATH/Contents/Resources/extract-ai-token-backend"
 if [[ -f "$BACKEND" ]]; then
   chmod +x "$BACKEND"
   sign_file "$BACKEND" 0
