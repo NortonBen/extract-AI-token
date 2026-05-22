@@ -22,8 +22,9 @@
 | **Chrome extension** (side panel) | ✅ | ✅ | ✅ |
 | **Desktop app** (tray + backend launcher) | ✅ | ✅ | ✅ |
 | **Local backend** (SQLite, API, WebSocket) | ✅ | ✅ | ✅ |
+| **Backend in Docker** (API on host) | ✅ | ✅ | ✅ |
 
-The backend listens on your machine only (default `127.0.0.1:9516`). Account and history data are stored locally in SQLite, managed by the desktop app on each OS.
+The backend listens on your machine by default (`127.0.0.1:9516`). You can also run the backend in **Docker** (port mapped to the host); the Chrome extension still runs on the same machine — see [C. Docker](#c-docker).
 
 ### Browsers (extension)
 
@@ -233,7 +234,45 @@ lipo -create \
 chmod +x ../build/extract-ai-token
 ```
 
-> **Note:** Run only one backend per port — either the CLI **or** the app’s managed process, not both on the same port.
+> **Note:** Run only one backend per port — CLI, desktop app, **or** Docker container — not more than one on the same host port.
+
+### C. Docker
+
+The image runs the **backend API only** (no desktop app or extension). The extension and Gemini tabs stay on the host; the container serves `http://127.0.0.1:9516` when the port is mapped.
+
+Details: [docs/DOCKER.md](docs/DOCKER.md).
+
+**Build image**
+
+```bash
+./scripts/docker-build.sh
+# or: docker build -t extract-ai-token:latest .
+```
+
+**Run (Compose)**
+
+```bash
+docker compose up -d
+curl http://127.0.0.1:9516/health
+```
+
+**Quick run (`docker run`)**
+
+```bash
+docker run -d --name extract-ai-token \
+  -p 9516:9516 \
+  -v extract-ai-token-data:/data \
+  extract-ai-token:latest
+```
+
+| Variable (container) | Default | Notes |
+|----------------------|---------|--------|
+| `APP_ADDR` | `0.0.0.0:9516` | Must bind `0.0.0.0` inside the container |
+| `SQLITE_PATH` | `/data/app.db` | Mount a volume at `/data` |
+
+**GHCR images** (on tag push `v*.*.*`): `ghcr.io/<owner>/<repo>:<version>` — see [`.github/workflows/docker.yml`](.github/workflows/docker.yml).
+
+In the extension **Settings**, use host `127.0.0.1` and port `9516` (or your `EXTRACT_TOKEN_PORT` host mapping).
 
 ## Getting started
 
@@ -242,6 +281,8 @@ chmod +x ../build/extract-ai-token
 **Using the desktop app:** open the app for your OS (see [A. Desktop app](#a-desktop-app-recommended) above). Confirm **Running** in the tray or Dashboard.
 
 **Using the CLI only:** run `./extract-ai-token` (see [B. CLI only](#b-cli-only--extract-ai-token) above), then point the Chrome extension to the same host/port.
+
+**Using Docker:** `docker compose up -d` (see [C. Docker](#c-docker)); point the extension at `127.0.0.1` and the mapped port.
 
 **Tray menu:**
 

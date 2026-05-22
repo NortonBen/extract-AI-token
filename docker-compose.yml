@@ -1,0 +1,26 @@
+services:
+  extract-ai-token:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: extract-ai-token:latest
+    container_name: extract-ai-token
+    ports:
+      - "${EXTRACT_TOKEN_PORT:-9516}:9516"
+    environment:
+      APP_ADDR: 0.0.0.0:9516
+      SQLITE_PATH: /data/app.db
+      RUST_LOG: ${RUST_LOG:-info}
+      NO_COLOR: "1"
+    volumes:
+      - extract-ai-token-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9516/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  extract-ai-token-data:

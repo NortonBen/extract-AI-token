@@ -1,0 +1,17 @@
+.git
+.github
+app
+extension
+old
+target
+build
+node_modules
+dist
+.wxt
+.output
+data
+**/*.md
+!README.md
+!README-vn.md
+**/.DS_Store
+**/target

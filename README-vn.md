@@ -22,8 +22,9 @@
 | **Extension Chrome** (side panel) | ✅ | ✅ | ✅ |
 | **Ứng dụng desktop** (tray + khởi chạy backend) | ✅ | ✅ | ✅ |
 | **Backend cục bộ** (SQLite, API, WebSocket) | ✅ | ✅ | ✅ |
+| **Backend trong Docker** (API trên host) | ✅ | ✅ | ✅ |
 
-Backend chỉ lắng nghe trên máy bạn (mặc định `127.0.0.1:9516`). Account và history lưu cục bộ trong SQLite, do app desktop quản lý trên từng hệ điều hành.
+Backend mặc định lắng nghe trên máy bạn (`127.0.0.1:9516`). Có thể chạy backend trong **Docker** (map cổng ra host); extension Chrome vẫn trên cùng máy — xem [C. Docker](#c-docker). Account và history lưu cục bộ trong SQLite, do app desktop quản lý trên từng hệ điều hành.
 
 ### Trình duyệt (extension)
 
@@ -233,7 +234,45 @@ lipo -create \
 chmod +x ../build/extract-ai-token
 ```
 
-> **Lưu ý:** Mỗi cổng chỉ nên có **một** backend — CLI **hoặc** process do app quản lý, không chạy trùng cùng port.
+> **Lưu ý:** Mỗi cổng chỉ nên có **một** backend — CLI, app desktop, **hoặc** container Docker — không chạy trùng cùng port trên host.
+
+### C. Docker
+
+Image chỉ chứa **backend API** (không có app desktop / extension). Extension và tab Gemini vẫn chạy trên máy host; container phục vụ `http://127.0.0.1:9516` khi map port.
+
+Chi tiết: [docs/DOCKER.md](docs/DOCKER.md).
+
+**Build image**
+
+```bash
+./scripts/docker-build.sh
+# hoặc: docker build -t extract-ai-token:latest .
+```
+
+**Chạy (Compose)**
+
+```bash
+docker compose up -d
+curl http://127.0.0.1:9516/health
+```
+
+**Chạy nhanh (`docker run`)**
+
+```bash
+docker run -d --name extract-ai-token \
+  -p 9516:9516 \
+  -v extract-ai-token-data:/data \
+  extract-ai-token:latest
+```
+
+| Biến (container) | Mặc định | Ghi chú |
+|------------------|----------|---------|
+| `APP_ADDR` | `0.0.0.0:9516` | Bắt buộc `0.0.0.0` trong container |
+| `SQLITE_PATH` | `/data/app.db` | Gắn volume `/data` |
+
+**Image trên GHCR** (khi push tag `v*.*.*`): `ghcr.io/<owner>/<repo>:<version>` — workflow [`.github/workflows/docker.yml`](.github/workflows/docker.yml).
+
+Extension → Settings: host `127.0.0.1`, port `9516` (hoặc `EXTRACT_TOKEN_PORT` nếu đổi map).
 
 ## Bắt đầu sử dụng
 
@@ -242,6 +281,8 @@ chmod +x ../build/extract-ai-token
 **Dùng app desktop:** mở app theo hướng dẫn [A. Ứng dụng desktop](#a-ứng-dụng-desktop-khuyến-nghị) ở trên; xác nhận **Running** trên tray/Dashboard.
 
 **Chỉ dùng CLI:** chạy `./extract-ai-token` (xem [B. Chỉ CLI](#b-chỉ-cli--extract-ai-token)); cấu hình extension Chrome cùng host/port.
+
+**Docker:** `docker compose up -d` (xem [C. Docker](#c-docker)); extension trỏ `127.0.0.1` + cổng đã map.
 
 **Menu tray:**
 
