@@ -18,10 +18,11 @@ use crate::models::{
     SetBusyRequest, UpsertAccountRequest, UpsertModelRequest,
 };
 use crate::state::{AccountRow, AppState, HistoryRow, ModelRow, WsRpcResponse};
+use crate::stream_bridge::StreamEvent;
 use crate::sanitize::sanitize_model_output;
 use crate::tools::{
     build_prompt, looks_like_tool_calls_json, openai_tool_message, resolve_tool_calls_relaxed,
-    ChatMessage, ToolCall, ToolDefinition,
+    ChatMessage, ToolDefinition,
 };
 
 #[derive(Deserialize)]
@@ -113,6 +114,10 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                 };
 
                 if let Ok(value) = serde_json::from_str::<Value>(&message) {
+                    if value.get("stream_push").and_then(|x| x.as_bool()) == Some(true) {
+                        handle_stream_push(&state, &value);
+                        continue;
+                    }
                     let id = value.get("id").and_then(|x| x.as_str()).unwrap_or_default();
                     if !id.is_empty() && value.get("ok").is_some() {
                         let response = WsRpcResponse {
@@ -159,6 +164,46 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
         }
     }
     state.clear_ws_sender().await;
+}
+
+fn handle_stream_push(state: &AppState, value: &Value) {
+    let stream_id = value
+        .get("stream_id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
+    if stream_id.is_empty() {
+        return;
+    }
+    let event = value
+        .get("event")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
+    match event {
+        "delta" => {
+            if let Some(delta) = value.get("delta").and_then(|x| x.as_str()) {
+                if !delta.is_empty() {
+                    let _ = state.push_gemini_stream(stream_id, StreamEvent::Delta(delta.to_string()));
+                }
+            }
+        }
+        "done" => {
+            let text = value
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let _ = state.push_gemini_stream(stream_id, StreamEvent::Done { text });
+        }
+        "error" => {
+            let err = value
+                .get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("stream error")
+                .to_string();
+            let _ = state.push_gemini_stream(stream_id, StreamEvent::Error(err));
+        }
+        _ => {}
+    }
 }
 
 fn dispatch_ws_request(state: &AppState, req: WsRequest) -> WsResponse {
@@ -616,6 +661,35 @@ async fn openai_chat_completions(
 
     let stream = payload.stream.unwrap_or(false);
 
+    if stream {
+        let stream_id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
+        let rx = state.open_gemini_stream(stream_id.clone());
+        let st = state.clone();
+        let sid = stream_id.clone();
+        let aid = account_id.clone();
+        let m = model.clone();
+        let p = prompt.clone();
+        tokio::spawn(async move {
+            if let Err(err) = st
+                .call_ws_client(
+                    "controller.execute",
+                    serde_json::json!({
+                        "action": "send_prompt_stream",
+                        "stream_id": sid,
+                        "account_id": aid,
+                        "model": m,
+                        "prompt": p,
+                    }),
+                    Duration::from_secs(10),
+                )
+                .await
+            {
+                let _ = st.push_gemini_stream(&sid, StreamEvent::Error(err.to_string()));
+            }
+        });
+        return sse_gemini_live(state.clone(), model, stream_id, rx, payload.tools).into_response();
+    }
+
     let call = state
         .call_ws_client(
             "controller.execute",
@@ -673,10 +747,6 @@ async fn openai_chat_completions(
             .into_response();
     }
 
-    if stream {
-        return sse_chat_completion(model, response_text, tool_calls).into_response();
-    }
-
     let id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
     let created = Utc::now().timestamp();
     let usage = serde_json::json!({
@@ -710,17 +780,19 @@ async fn openai_chat_completions(
     (StatusCode::OK, Json(out)).into_response()
 }
 
-fn sse_chat_completion(
+/// Live SSE: forwards Gemini StreamGenerate deltas from extension via WS (`stream_push`).
+fn sse_gemini_live(
+    state: AppState,
     model: String,
-    content_text: String,
-    tool_calls: Vec<ToolCall>,
+    stream_id: String,
+    mut rx: mpsc::UnboundedReceiver<StreamEvent>,
+    tools: Vec<ToolDefinition>,
 ) -> impl IntoResponse {
-    let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
-    let id = format!("chatcmpl-{}", Utc::now().timestamp_millis());
+    let (tx, rx_sse) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
     let created = Utc::now().timestamp();
 
     let role_event = serde_json::json!({
-        "id": id,
+        "id": stream_id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
@@ -732,9 +804,76 @@ fn sse_chat_completion(
     });
     let _ = tx.send(Ok(Event::default().data(role_event.to_string())));
 
-    let model_for_task = model.clone();
-    let id_for_task = id.clone();
+    let model_task = model.clone();
+    let id_task = stream_id.clone();
     tokio::spawn(async move {
+        let mut full_text = String::new();
+        let mut stream_error: Option<String> = None;
+        let mut sent_delta = false;
+
+        while let Some(evt) = rx.recv().await {
+            match evt {
+                StreamEvent::Delta(delta) => {
+                    sent_delta = true;
+                    full_text.push_str(&delta);
+                    let event = serde_json::json!({
+                        "id": id_task,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_task,
+                        "choices": [{
+                            "index": 0,
+                            "delta": { "content": delta },
+                            "finish_reason": null
+                        }]
+                    });
+                    if tx.send(Ok(Event::default().data(event.to_string()))).is_err() {
+                        return;
+                    }
+                }
+                StreamEvent::Done { text } => {
+                    if !text.is_empty() {
+                        full_text = text;
+                    }
+                    break;
+                }
+                StreamEvent::Error(err) => {
+                    stream_error = Some(err);
+                    break;
+                }
+            }
+        }
+
+        if let Some(err) = stream_error {
+            let event = serde_json::json!({
+                "id": id_task,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_task,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "content": format!("Error: {err}") },
+                    "finish_reason": "stop"
+                }]
+            });
+            let _ = tx.send(Ok(Event::default().data(event.to_string())));
+            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            return;
+        }
+
+        let raw = full_text.clone();
+        let tool_calls = resolve_tool_calls_relaxed(&raw, &tools);
+        let content_text = if tool_calls.is_empty() {
+            let sanitized = sanitize_model_output(&raw);
+            if sanitized.trim().is_empty() && !raw.trim().is_empty() {
+                raw.trim().to_string()
+            } else {
+                sanitized
+            }
+        } else {
+            String::new()
+        };
+
         let finish_reason = if !tool_calls.is_empty() {
             "tool_calls"
         } else {
@@ -744,10 +883,10 @@ fn sse_chat_completion(
         if !tool_calls.is_empty() {
             for (i, tc) in tool_calls.iter().enumerate() {
                 let chunk_a = serde_json::json!({
-                    "id": id_for_task,
+                    "id": id_task,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": model_for_task,
+                    "model": model_task,
                     "choices": [{
                         "index": 0,
                         "delta": {
@@ -767,10 +906,10 @@ fn sse_chat_completion(
                 let _ = tx.send(Ok(Event::default().data(chunk_a.to_string())));
 
                 let chunk_b = serde_json::json!({
-                    "id": id_for_task,
+                    "id": id_task,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": model_for_task,
+                    "model": model_task,
                     "choices": [{
                         "index": 0,
                         "delta": {
@@ -786,34 +925,29 @@ fn sse_chat_completion(
                 });
                 let _ = tx.send(Ok(Event::default().data(chunk_b.to_string())));
             }
-        } else if !content_text.is_empty() {
-            for piece in chunk_text(&content_text, 24) {
-                let event = serde_json::json!({
-                    "id": id_for_task,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model_for_task,
-                    "choices": [{
-                        "index": 0,
-                        "delta": { "content": piece },
-                        "finish_reason": null
-                    }]
-                });
-                if tx
-                    .send(Ok(Event::default().data(event.to_string())))
-                    .is_err()
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(35)).await;
-            }
+        } else if !sent_delta && !content_text.is_empty() {
+            // DOM fallback: no StreamGenerate deltas — emit full text once.
+            let event = serde_json::json!({
+                "id": id_task,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_task,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "content": content_text },
+                    "finish_reason": null
+                }]
+            });
+            let _ = tx.send(Ok(Event::default().data(event.to_string())));
         }
 
+        state.close_gemini_stream(&id_task);
+
         let final_event = serde_json::json!({
-            "id": id_for_task,
+            "id": id_task,
             "object": "chat.completion.chunk",
             "created": created,
-            "model": model_for_task,
+            "model": model_task,
             "choices": [{
                 "index": 0,
                 "delta": {},
@@ -824,31 +958,7 @@ fn sse_chat_completion(
         let _ = tx.send(Ok(Event::default().data("[DONE]")));
     });
 
-    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
-}
-
-fn chunk_text(text: &str, target_chunk: usize) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        let mut end = (start + target_chunk).min(chars.len());
-        if end < chars.len() {
-            let window_start = end.saturating_sub(8);
-            if let Some(offset) = chars[window_start..end]
-                .iter()
-                .rposition(|c| c.is_whitespace())
-            {
-                end = window_start + offset + 1;
-            }
-        }
-        chunks.push(chars[start..end].iter().collect());
-        start = end;
-    }
-    chunks
+    Sse::new(UnboundedReceiverStream::new(rx_sse)).keep_alive(KeepAlive::default())
 }
 
 fn account_from_row(row: AccountRow) -> Account {

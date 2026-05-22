@@ -440,6 +440,27 @@ interface StreamState {
   doneResolvers: Array<(text: string) => void>;
 }
 
+type StreamDeltaHandler = (delta: string, fullText: string) => void;
+const streamDeltaHandlers: StreamDeltaHandler[] = [];
+
+function subscribeStreamDeltas(handler: StreamDeltaHandler): () => void {
+  streamDeltaHandlers.push(handler);
+  return () => {
+    const idx = streamDeltaHandlers.indexOf(handler);
+    if (idx >= 0) streamDeltaHandlers.splice(idx, 1);
+  };
+}
+
+function emitStreamDelta(delta: string, fullText: string): void {
+  for (const handler of streamDeltaHandlers.slice()) {
+    try {
+      handler(delta, fullText);
+    } catch {
+      // ignore consumer errors
+    }
+  }
+}
+
 const streamState: StreamState = {
   requestId: null,
   text: "",
@@ -492,10 +513,14 @@ window.addEventListener("message", (event) => {
       streamState.done = false;
       streamState.errored = false;
       break;
-    case "delta":
+    case "delta": {
       streamState.requestId = streamState.requestId || payload.requestId;
-      if (typeof payload.text === "string") streamState.text = payload.text;
+      const fullText = typeof payload.text === "string" ? payload.text : streamState.text;
+      streamState.text = fullText;
+      const delta = typeof payload.delta === "string" ? payload.delta : "";
+      if (delta) emitStreamDelta(delta, fullText);
       break;
+    }
     case "status":
       if (typeof payload.status === "string") streamState.status = payload.status;
       break;
@@ -536,10 +561,14 @@ function waitForStreamDone(timeoutMs: number): Promise<string | null> {
   });
 }
 
-async function sendGeminiPrompt(prompt: string): Promise<{ responseText: string }> {
+async function sendGeminiPrompt(
+  prompt: string,
+  options?: { onDelta?: (delta: string, fullText: string) => void }
+): Promise<{ responseText: string }> {
   const trimmed = prompt.trim();
   if (!trimmed) throw new Error("Prompt is empty");
   resetStreamState();
+  const unsubscribeDelta = options?.onDelta ? subscribeStreamDeltas(options.onDelta) : () => {};
   const prevCount = messageContentCount();
   const injected = setComposerPrompt(trimmed);
   if (!injected) throw new Error("Gemini composer not found");
@@ -571,6 +600,8 @@ async function sendGeminiPrompt(prompt: string): Promise<{ responseText: string 
       throw err.errors[err.errors.length - 1] || new Error("No response from Gemini");
     }
     throw err;
+  } finally {
+    unsubscribeDelta();
   }
   if (!winner || !winner.text.trim()) {
     throw new Error("Gemini returned empty response");
@@ -612,6 +643,44 @@ export default defineContentScript({
               error: error instanceof Error ? error.message : "Unknown error"
             })
           );
+        return true;
+      }
+      if (message?.type === "gemini.chat.send_stream") {
+        const prompt = String(message.payload?.prompt || "");
+        const streamId = String(message.payload?.streamId || "");
+        const onDelta = (delta: string, _full: string) => {
+          if (!streamId) return;
+          chrome.runtime
+            .sendMessage({
+              type: "gemini.stream.push",
+              payload: { streamId, event: "delta", delta }
+            })
+            .catch(() => {});
+        };
+        sendGeminiPrompt(prompt, { onDelta })
+          .then((result) => {
+            if (streamId) {
+              chrome.runtime
+                .sendMessage({
+                  type: "gemini.stream.push",
+                  payload: { streamId, event: "done", text: result.responseText }
+                })
+                .catch(() => {});
+            }
+            sendResponse(result);
+          })
+          .catch((error: unknown) => {
+            const err = error instanceof Error ? error.message : "Unknown error";
+            if (streamId) {
+              chrome.runtime
+                .sendMessage({
+                  type: "gemini.stream.push",
+                  payload: { streamId, event: "error", error: err }
+                })
+                .catch(() => {});
+            }
+            sendResponse({ responseText: "", error: err });
+          });
         return true;
       }
       if (message?.type === "gemini.account.detect") {

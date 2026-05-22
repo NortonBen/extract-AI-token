@@ -1,4 +1,5 @@
 use crate::models::{BusyState, Provider};
+use crate::stream_bridge::{StreamBridge, StreamEvent};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
@@ -26,6 +27,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub busy: Arc<Mutex<BusyState>>,
     pub ws_bridge: Arc<AsyncMutex<WsBridge>>,
+    pub stream_bridge: Arc<StreamBridge>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +110,20 @@ impl AppState {
             db: Arc::new(Mutex::new(conn)),
             busy: Arc::new(Mutex::new(BusyState::default())),
             ws_bridge: Arc::new(AsyncMutex::new(WsBridge::default())),
+            stream_bridge: Arc::new(StreamBridge::default()),
         })
+    }
+
+    pub fn open_gemini_stream(&self, stream_id: String) -> mpsc::UnboundedReceiver<StreamEvent> {
+        self.stream_bridge.open(stream_id)
+    }
+
+    pub fn push_gemini_stream(&self, stream_id: &str, event: StreamEvent) -> bool {
+        self.stream_bridge.push(stream_id, event)
+    }
+
+    pub fn close_gemini_stream(&self, stream_id: &str) {
+        self.stream_bridge.close(stream_id);
     }
 
     pub async fn set_ws_sender(&self, sender: mpsc::UnboundedSender<String>) {

@@ -91,6 +91,21 @@ class BackendWsClient {
     );
   }
 
+  /** Push live Gemini stream frames to backend (no RPC id — see stream_push in http.rs). */
+  pushStream(
+    streamId: string,
+    payload: { event: "delta" | "done" | "error"; delta?: string; text?: string; error?: string }
+  ): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        stream_push: true,
+        stream_id: streamId,
+        ...payload
+      })
+    );
+  }
+
   private wsUrl(): string {
     return `ws://${this.config.host}:${this.config.port}/ws`;
   }
@@ -510,6 +525,74 @@ async function performSend(tabId: number, prompt: string): Promise<any> {
   );
 }
 
+async function performSendStream(
+  tabId: number,
+  prompt: string,
+  streamId: string
+): Promise<any> {
+  return withDeadline(
+    sendMessageToGeminiTab(tabId, {
+      type: "gemini.chat.send_stream",
+      payload: { prompt, streamId }
+    }),
+    SEND_HARD_DEADLINE_MS,
+    "gemini.chat.send_stream"
+  );
+}
+
+async function sendPromptStream(payload: {
+  accountId: string;
+  model: string;
+  prompt: string;
+  streamId: string;
+}) {
+  let tabId = await ensureResponsiveAccountTab(payload.accountId);
+  await backend.request("busy.set", { account_id: payload.accountId, busy: true });
+  try {
+    let result: any;
+    try {
+      result = await performSendStream(tabId, payload.prompt, payload.streamId);
+    } catch (firstErr) {
+      try {
+        await sendMessageToGeminiTab(tabId, { type: "gemini.chat.stop" });
+      } catch {
+        // best effort
+      }
+      tabId = await recreateAccountTab(payload.accountId);
+      await waitForTabReady(tabId, 15000);
+      result = await performSendStream(tabId, payload.prompt, payload.streamId);
+    }
+    if (result?.error) {
+      backend.pushStream(payload.streamId, { event: "error", error: String(result.error) });
+      throw new Error(String(result.error));
+    }
+    const responseText = typeof result?.responseText === "string" ? result.responseText : "";
+
+    await backend.request("history.append", {
+      id: crypto.randomUUID(),
+      account_id: payload.accountId,
+      model: payload.model,
+      role: "user",
+      content: payload.prompt
+    });
+    await backend.request("history.append", {
+      id: crypto.randomUUID(),
+      account_id: payload.accountId,
+      model: payload.model,
+      role: "assistant",
+      content: responseText
+    });
+    closeAccountTab(payload.accountId).catch(() => {});
+    return { accountId: payload.accountId, model: payload.model, responseText };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    backend.pushStream(payload.streamId, { event: "error", error: msg });
+    throw err;
+  } finally {
+    await backend.request("busy.set", { account_id: payload.accountId, busy: false });
+  }
+}
+
 async function sendPrompt(payload: { accountId: string; model: string; prompt: string }) {
   let tabId = await ensureResponsiveAccountTab(payload.accountId);
   await backend.request("busy.set", { account_id: payload.accountId, busy: true });
@@ -590,14 +673,22 @@ async function handleBackendControllerRequest(type: string, payload: WsPayload):
     throw new Error(`Unsupported controller type: ${type}`);
   }
   const action = String(payload?.action || "");
-  if (action !== "send_prompt") {
-    throw new Error(`Unsupported controller action: ${action}`);
-  }
   const accountId = String(payload?.account_id || "");
   const model = String(payload?.model || "google/gemini-flash");
   const prompt = String(payload?.prompt || "");
   if (!accountId || !prompt.trim()) {
     throw new Error("Missing account_id or prompt");
+  }
+
+  if (action === "send_prompt_stream") {
+    const streamId = String(payload?.stream_id || "");
+    if (!streamId) throw new Error("Missing stream_id");
+    void sendPromptStream({ accountId, model, prompt, streamId });
+    return { accepted: true, stream_id: streamId };
+  }
+
+  if (action !== "send_prompt") {
+    throw new Error(`Unsupported controller action: ${action}`);
   }
   const result = await sendPrompt({ accountId, model, prompt });
   return {
@@ -812,7 +903,32 @@ export default defineBackground(() => {
     }
   });
 
-  chrome.runtime.onMessage.addListener((message: ExtensionMessage, _, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
+    const raw = message as ExtensionMessage & {
+      type?: string;
+      payload?: {
+        streamId?: string;
+        event?: "delta" | "done" | "error";
+        delta?: string;
+        text?: string;
+        error?: string;
+      };
+    };
+    if (raw?.type === "gemini.stream.push") {
+      const streamId = String(raw.payload?.streamId || "");
+      const event = raw.payload?.event;
+      if (streamId && event) {
+        backend.pushStream(streamId, {
+          event,
+          delta: raw.payload?.delta,
+          text: raw.payload?.text,
+          error: raw.payload?.error
+        });
+      }
+      sendResponse({ ok: true });
+      return true;
+    }
+
     handleMessage(message)
       .then((result) => sendResponse(result))
       .catch((error: unknown) =>

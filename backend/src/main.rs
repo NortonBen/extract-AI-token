@@ -2,6 +2,7 @@ mod http;
 mod models;
 mod sanitize;
 mod state;
+mod stream_bridge;
 mod tools;
 
 use std::env;
