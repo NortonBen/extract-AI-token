@@ -5,7 +5,7 @@ const BACKEND_CONFIG_KEY = "ai_browser_backend_config";
 
 const defaultBackendConfig: BackendConnectionConfig = {
   host: "127.0.0.1",
-  port: 8787
+  port: 9516
 };
 
 export async function getTabs(): Promise<AccountTab[]> {

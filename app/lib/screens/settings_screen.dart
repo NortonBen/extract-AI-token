@@ -125,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       fontFamily: 'monospace',
                     ),
                     decoration: InputDecoration(
-                      hintText: '8787',
+                      hintText: '9516',
                       errorText: _portError,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       isDense: true,

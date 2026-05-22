@@ -57,7 +57,7 @@ function makeFallbackState(host: string, port: string): ExtensionState {
     busy: { globalBusy: false, accounts: {} },
     backend: {
       host,
-      port: Number(port) || 8787,
+      port: Number(port) || 9516,
       connected: false,
       lastError: "Backend unavailable"
     },
@@ -68,7 +68,7 @@ function makeFallbackState(host: string, port: string): ExtensionState {
 
 export function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [state, setState] = useState<ExtensionState>(() => makeFallbackState("127.0.0.1", "8787"));
+  const [state, setState] = useState<ExtensionState>(() => makeFallbackState("127.0.0.1", "9516"));
   const [dashboard, setDashboard] = useState<DashboardSummary>(emptyDashboard);
   const [prompt, setPrompt] = useState("");
   const [activeAccountId, setActiveAccountId] = useState("");
@@ -78,7 +78,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [backendHost, setBackendHost] = useState("127.0.0.1");
-  const [backendPort, setBackendPort] = useState("8787");
+  const [backendPort, setBackendPort] = useState("9516");
   const [detectedPreview, setDetectedPreview] = useState<GeminiAccountPreview | null>(null);
   const [addAccountError, setAddAccountError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
@@ -109,7 +109,7 @@ export function App() {
         ? backendRes.value
         : {
             host: nextState.backend?.host || backendHost,
-            port: nextState.backend?.port || Number(backendPort) || 8787,
+            port: nextState.backend?.port || Number(backendPort) || 9516,
             connected: false,
             lastError: "Backend unavailable"
           };
@@ -375,6 +375,7 @@ export function App() {
                     onChangePrompt={setPrompt}
                     onSendPrompt={onSendPrompt}
                     onStopPrompt={onStopPrompt}
+                    onClearResponse={() => setResultText("")}
                   />
                 </Suspense>
               )
@@ -404,7 +405,7 @@ export function App() {
             <Input placeholder="127.0.0.1" />
           </Form.Item>
           <Form.Item label="Port" name="port" rules={[{ required: true, message: "Port is required" }]}>
-            <Input placeholder="8787" />
+            <Input placeholder="9516" />
           </Form.Item>
         </Form>
       </Modal>

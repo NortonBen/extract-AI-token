@@ -25,13 +25,13 @@ interface WsIncomingRequestEnvelope {
 
 class BackendWsClient {
   private ws: WebSocket | null = null;
-  private config: BackendConnectionConfig = { host: "127.0.0.1", port: 8787 };
+  private config: BackendConnectionConfig = { host: "127.0.0.1", port: 9516 };
   private reconnectTimer: number | null = null;
   private shouldReconnect = true;
   private pending = new Map<string, { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: number }>();
   private status: BackendConnectionStatus = {
     host: "127.0.0.1",
-    port: 8787,
+    port: 9516,
     connected: false,
     lastError: null
   };

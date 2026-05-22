@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let addr = env::var("APP_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let addr = env::var("APP_ADDR").unwrap_or_else(|_| "127.0.0.1:9516".to_string());
     let db_path = env::var("SQLITE_PATH").unwrap_or_else(|_| "data/app.db".to_string());
 
     let state = AppState::init(&db_path).with_context(|| "initialize app state")?;

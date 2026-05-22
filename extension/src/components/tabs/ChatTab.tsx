@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Avatar, Button, Card, Empty, Input, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import {
+  ClearOutlined,
   CopyOutlined,
   MessageOutlined,
   RobotOutlined,
@@ -27,6 +28,7 @@ interface Props {
   onChangePrompt: (v: string) => void;
   onSendPrompt: () => void;
   onStopPrompt: () => void;
+  onClearResponse: () => void;
 }
 
 export default function ChatTab(props: Props) {
@@ -41,7 +43,8 @@ export default function ChatTab(props: Props) {
     onChangeAccount,
     onChangePrompt,
     onSendPrompt,
-    onStopPrompt
+    onStopPrompt,
+    onClearResponse
   } = props;
 
   const [messageApi, contextHolder] = message.useMessage();
@@ -147,6 +150,18 @@ export default function ChatTab(props: Props) {
                   type="text"
                   icon={<CopyOutlined />}
                   onClick={copyToClipboard}
+                  disabled={!resultText}
+                />
+              </Tooltip>
+              <Tooltip title="Clear response">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ClearOutlined />}
+                  onClick={() => {
+                    onClearResponse();
+                    messageApi.success("Response cleared");
+                  }}
                   disabled={!resultText}
                 />
               </Tooltip>

@@ -40,7 +40,7 @@ class AppState extends ChangeNotifier {
   static final AppState instance = AppState._();
 
   // Settings
-  int port = 8787;
+  int port = 9516;
   bool publicBind = false;
 
   // Runtime
@@ -57,7 +57,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    port = prefs.getInt(_kPortKey) ?? 8787;
+    port = prefs.getInt(_kPortKey) ?? 9516;
     publicBind = prefs.getBool(_kPublicBindKey) ?? false;
     _launcher._onLog = _addLog;
     await start();

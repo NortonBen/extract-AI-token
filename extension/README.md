@@ -28,7 +28,7 @@ Output: `dist/chrome-mv3` — load as an unpacked extension in Chrome.
 - Content-script commands: `ping`, `detect_account`, `send_prompt`, `read_response`
 - Busy state per account + global (synced to backend when online)
 - Side panel: accounts, chat, history, dashboard, backend host/port settings
-- WebSocket client to backend (`127.0.0.1:8787` by default)
+- WebSocket client to backend (`127.0.0.1:9516` by default)
 
 ## Main files
 
