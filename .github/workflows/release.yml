@@ -1,5 +1,6 @@
 name: Release
 
+# Production builds (extension zip, extract-ai-token CLI, desktop app) run only on tags.
 on:
   push:
     tags:

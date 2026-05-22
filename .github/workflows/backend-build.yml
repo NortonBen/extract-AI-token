@@ -1,23 +1,16 @@
 name: Backend build
 
-# Build the standalone backend binary on every push to main + manual run.
-# Artifacts are published under the name `extract-ai-token-<platform>` so a
-# user can download just the backend from the Actions tab.
+# Standalone backend artifacts — only on version tags (same tag pattern as Release).
+# Full release (extension + app + GitHub Release) runs in release.yml.
 on:
   push:
-    branches: [main, master]
-    paths:
-      - "backend/**"
-      - ".github/workflows/backend-build.yml"
-  pull_request:
-    branches: [main, master]
-    paths:
-      - "backend/**"
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 concurrency:
   group: backend-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   macos:

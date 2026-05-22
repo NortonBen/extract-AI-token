@@ -1,5 +1,6 @@
 name: CI
 
+# Checks only (fmt, clippy, test, typecheck). Release binaries ship on tag via release.yml.
 on:
   push:
     branches: [main, master]
@@ -37,9 +38,6 @@ jobs:
       - name: Test
         run: cargo test
 
-      - name: Release build
-        run: cargo build --release
-
   extension:
     name: Chrome extension
     runs-on: ubuntu-latest
@@ -58,5 +56,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build (smoke test; release zip only on tag)
         run: npm run build
