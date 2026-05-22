@@ -1,11 +1,12 @@
-# AI Browser Extension (WXT)
+# Extract Token — Chrome extension
 
-Extension-first skeleton for Gemini multi-account tab control.
+WXT + React extension for Gemini multi-account tab control. Persists accounts, history, and busy state through the Rust backend WebSocket when connected.
+
+> Root docs: [README.md](../README.md) · [README-vn.md](../README-vn.md)
 
 ## Run
 
 ```bash
-cd /Users/benji/Projects/extract-AI-token/extension
 npm install
 npm run dev
 ```
@@ -16,33 +17,36 @@ Production build:
 npm run build
 ```
 
-Output folder:
+Output: `dist/chrome-mv3` — load as an unpacked extension in Chrome.
 
-- `dist/chrome-mv3`
+## Capabilities
 
-Load unpacked extension from that directory in Chrome.
-
-## Current capabilities
-
-- Account management (`gemini` only for now)
-- One account maps to one Gemini URL pattern:
-  - `https://gemini.google.com/u/{index}/app`
-- Tab ensure/open per account
-- Busy state per account + global
-- Local history retention (in `chrome.storage.local`)
-- Dashboard summary and quick chat test page in extension options
+- Account management (`gemini`; `chatgpt` in the type system)
+- URL patterns: `https://gemini.google.com/u/{index}/app` or custom `pageRoot`
+- Detect account metadata from the active Gemini tab
+- Tab ensure/open per account (local tab map in `chrome.storage.local`)
+- Content-script commands: `ping`, `detect_account`, `send_prompt`, `read_response`
+- Busy state per account + global (synced to backend when online)
+- Side panel: accounts, chat, history, dashboard, backend host/port settings
+- WebSocket client to backend (`127.0.0.1:8787` by default)
 
 ## Main files
 
-- `entrypoints/background.ts`: account/tab/busy/chat orchestration
-- `entrypoints/content.ts`: Gemini DOM send/read flow
-- `entrypoints/options/*`: React UI for account/history/dashboard
-- `src/lib/storage.ts`: storage/data layer
-- `src/lib/messages.ts`: internal message contracts
+| File | Role |
+|------|------|
+| `entrypoints/background.ts` | Backend WS client, account/tab/busy/chat orchestration |
+| `entrypoints/content.ts` | Gemini DOM automation |
+| `entrypoints/sidepanel/` | React side panel UI |
+| `src/lib/storage.ts` | Local storage (tabs, backend config) |
+| `src/lib/messages.ts` | Extension message contracts |
+| `src/lib/extension-api.ts` | Side panel API helpers |
 
-## Next step
+## Backend
 
-Replace in-extension persistence/logic with Rust backend bridge:
+Start the Rust server (or the macOS tray app) before expecting sync:
 
-- `chrome.runtime.connectNative` (recommended), or
-- local HTTP with token.
+```bash
+cd ../backend && cargo run
+```
+
+Configure connection in the side panel if host/port differ from defaults.
