@@ -1,131 +1,146 @@
-# extract-AI-token
+# Extract Token
 
 > **English:** [README.md](README.md)
 
-Extension Chrome và backend Rust để điều khiển nhiều tài khoản Gemini trên trình duyệt: tab theo account, trạng thái busy, lịch sử chat và đồng bộ qua HTTP / WebSocket. **Ứng dụng tray macOS** (tùy chọn) có thể khởi chạy và giám sát tiến trình backend.
+**Extract Token** giúp bạn làm việc với nhiều tài khoản Gemini trên Chrome từ một chỗ: quản lý account, mở đúng tab cho từng account, gửi prompt và lưu lịch sử chat — kèm **ứng dụng macOS** chạy dịch vụ dữ liệu cục bộ trên máy bạn.
 
-## Cấu trúc dự án
+## Bạn cần chuẩn bị
 
-| Thư mục | Mô tả |
-|--------|--------|
-| `extension/` | Extension Chrome (WXT + React): side panel, service worker nền, content script Gemini |
-| `backend/` | API Rust (Axum): REST + WebSocket, lưu SQLite |
-| `app/` | Ứng dụng tray Flutter macOS — bật/tắt binary backend, kiểm tra health cổng `8787` |
-| `old/` | Mã tham khảo / lưu trữ (không bắt buộc để chạy) |
+| Hạng mục | Ghi chú |
+|----------|---------|
+| **Google Chrome** | Cài extension Extract Token |
+| **macOS** | Ứng dụng desktop chạy backend cục bộ (khuyến nghị) |
+| **Tài khoản Gemini** | Đã đăng nhập trên [gemini.google.com](https://gemini.google.com) trong Chrome |
 
-## Tính năng
+Backend chỉ lắng nghe trên máy bạn (mặc định `127.0.0.1:8787`). Dữ liệu account và history lưu cục bộ trong SQLite do ứng dụng macOS quản lý.
 
-- **Nhiều tài khoản Gemini** — mỗi account gắn URL dạng `https://gemini.google.com/u/{index}/app` hoặc `pageRoot` tùy chỉnh
-- **Điều khiển tab** — mở/focus tab theo account; metadata tab lưu cục bộ trong extension
-- **Tự động hóa content script** — nhận diện account, gửi prompt, đọc phản hồi trên trang Gemini
-- **Đồng bộ backend** — background kết nối `ws://{host}:{port}/ws` (mặc định `127.0.0.1:8787`); account, history và busy lưu SQLite khi backend hoạt động
-- **Giao diện side panel** — account, chat, history, dashboard, cấu hình kết nối backend
-- **App tray macOS** — chạy nền binary `backend` (không hiện cửa sổ)
+## Bắt đầu sử dụng
 
-Model dữ liệu hỗ trợ provider `gemini` và `chatgpt`; tích hợp chính hiện tại là Gemini.
+### 1. Bật backend (ứng dụng macOS)
 
-## Yêu cầu
+1. Mở **Extract AI Token** trên Mac (từ gói cài đặt bạn nhận được).
+2. Ứng dụng tự khởi động backend và hiện biểu tượng trên **thanh menu** (menu bar).
+3. Xác nhận trạng thái **Running**:
+   - Bấm icon menu bar → **Open Dashboard**, hoặc
+   - Menu tray hiển thị **● Running (port 8787)** (cổng có thể khác nếu bạn đổi trong Settings).
 
-| Thành phần | Yêu cầu |
-|------------|---------|
-| Extension | [Node.js](https://nodejs.org/) 20+, Google Chrome |
-| Backend | [Rust](https://www.rust-lang.org/) stable (edition 2024) |
-| App macOS (tùy chọn) | [Flutter](https://flutter.dev/) SDK, macOS |
+**Menu tray (icon menu bar):**
 
-## Chạy nhanh
+| Thao tác | Ý nghĩa |
+|----------|---------|
+| Open Dashboard | Trạng thái, URL API, số account/history |
+| Open Logs | Nhật ký backend |
+| Open Settings | Đổi cổng, bind local hoặc mạng |
+| Copy API URL | Sao chép `http://127.0.0.1:<port>` cho extension |
+| Start / Restart / Stop Backend | Điều khiển dịch vụ cục bộ |
 
-### 1. Backend
+Đóng cửa sổ app chỉ ẩn giao diện; app vẫn chạy nền qua tray. Thoát hẳn từ menu tray khi muốn dừng mọi thứ.
 
-**Cách A — chạy từ mã nguồn**
+**Settings (app macOS):**
 
-```bash
-cd backend
-cargo run
-```
+- **Port** — mặc định `8787`; phải trùng cổng trong extension Chrome.
+- **Public bind** — tắt (khuyến nghị): chỉ máy này kết nối được. Bật: lắng nghe mọi interface (`0.0.0.0`); chỉ dùng trên mạng tin cậy.
 
-**Cách B — app tray macOS** (khởi chạy binary backend từ menu bar)
+Sau khi đổi port hoặc bind, bấm **Save & Restart** trong Settings.
 
-```bash
-cd app
-flutter run -d macos
-```
+### 2. Cài extension Chrome
 
-Mặc định lắng nghe `127.0.0.1:8787`. Database SQLite: `backend/data/app.db` (hoặc đường dẫn do launcher đặt).
+1. Mở `chrome://extensions` trong Chrome.
+2. Bật **Chế độ nhà phát triển** (nếu cài từ thư mục local).
+3. **Tải tiện ích đã giải nén** → chọn thư mục `chrome-mv3` trong gói Extract Token.
+4. Ghim extension nếu muốn; mở **side panel** (icon extension hoặc menu side panel của Chrome).
 
-| Biến | Mặc định | Ý nghĩa |
-|------|----------|---------|
-| `APP_ADDR` | `127.0.0.1:8787` | Địa chỉ bind |
-| `SQLITE_PATH` | `data/app.db` | Đường dẫn SQLite (tương đối thư mục backend) |
-| `RUST_LOG` | `info` | Mức log tracing |
+### 3. Kết nối extension ↔ backend
 
-Kiểm tra: `curl http://127.0.0.1:8787/health`
+1. Mở **side panel** Extract Token.
+2. Xem nhãn trên header:
+   - **Connected** — extension đang nói chuyện với backend.
+   - **Disconnected** — backend tắt hoặc host/port sai.
+3. Nếu disconnected:
+   - **Settings** (bánh răng) → **Host** (`127.0.0.1`) và **Port** (trùng app macOS, thường `8787`) → **Save & Reconnect**.
+   - Hoặc bấm **Reconnect** (icon reload) sau khi app macOS báo **Running**.
 
-### 2. Extension
+Panel vẫn mở được khi backend tắt; account và history đồng bộ lại khi kết nối được.
 
-```bash
-cd extension
-npm install
-npm run dev
-```
+## Dùng side panel
 
-Build production:
+Panel có bốn tab. Dữ liệu tự làm mới vài giây một lần.
 
-```bash
-npm run build
-```
+### Dashboard
 
-Load extension unpacked từ `extension/dist/chrome-mv3` trong Chrome (`chrome://extensions` → Chế độ nhà phát triển → Tải tiện ích đã giải nén).
+Tổng quan nhanh:
 
-Mở **side panel**, cấu hình host/port backend nếu cần và reconnect. Panel vẫn dùng được khi backend tắt; đồng bộ khi kết nối lại.
+- Số account (đang bật / đã khóa)
+- Tab Gemini đang mở và account **busy** (đang xử lý prompt)
+- Số tin nhắn history
+- Kết nối backend (`host:port`, connected hay không)
 
-Chi tiết extension: [extension/README.md](extension/README.md).
+Dùng tab này để kiểm tra hệ thống ổn trước khi chat.
 
-## API backend
+### Accounts
 
-### REST
+Quản lý profile Gemini:
 
-| Method | Path | Mô tả |
-|--------|------|--------|
-| `GET` | `/health` | Health check |
-| `GET` | `/ws` | Nâng cấp WebSocket |
-| `GET` / `PUT` | `/v1/accounts` | Liệt kê / upsert account |
-| `DELETE` | `/v1/accounts/{id}` | Xóa account |
-| `GET` / `PUT` | `/v1/models` | Liệt kê / upsert model |
-| `DELETE` | `/v1/models/{id}` | Xóa model |
-| `GET` / `POST` / `DELETE` | `/v1/history` | Đọc / thêm / xóa history |
-| `GET` / `POST` | `/v1/busy` | Đọc / ghi busy |
-| `GET` | `/v1/dashboard` | Tóm tắt dashboard |
+1. Bấm **Add Account**.
+2. Trong Chrome, mở tab Gemini của account cần thêm (đã đăng nhập).
+3. Trong hộp thoại, bấm **Detect From Active Gemini Tab** — điền **Page Root** và gợi ý **Label** (tên, email, tier).
+4. Bấm **Create**.
 
-### Lệnh WebSocket
+Theo từng account:
 
-Envelope: `{ "id": "<uuid>", "type": "<command>", "payload": { ... } }`
+| Nút | Tác dụng |
+|-----|----------|
+| Lock / Unlock | Account bị khóa sẽ không dùng cho tự động hóa |
+| Select | Chọn account cho tab Chat |
+| Open Tab | Mở hoặc focus tab Gemini của account |
+| Delete | Xóa account khỏi bộ nhớ |
 
-| `type` | Mô tả |
-|--------|--------|
-| `ping` | Kiểm tra sống |
-| `state.get` | Account, history (tối đa 200), busy |
-| `dashboard.get` | Số liệu dashboard |
-| `models.get` / `model.upsert` / `model.delete` | Quản lý model |
-| `account.upsert` / `account.delete` | CRUD account |
-| `history.append` / `history.clear` | Ghi history |
-| `busy.get` / `busy.set` | Cờ busy |
+Mỗi account gắn một URL Gemini (ví dụ `https://gemini.google.com/u/0/app` hoặc page root tùy chỉnh).
 
-## CI
+### Chat
 
-GitHub Actions trên push/PR nhánh `main` và `master`:
+Gửi prompt thử qua extension (dùng tab Gemini của account đã chọn):
 
-- **backend** — `cargo fmt --check`, `clippy`, `test`, build release
-- **extension** — `npm ci`, `npm run build`
+1. Chọn **account** trong dropdown.
+2. Nhập nội dung vào ô text.
+3. **Send Prompt** — đợi **Latest response** bên dưới.
+4. **Stop** — hủy khi đang generate.
+5. **stream** — bật chế độ stream (SSE tương thích OpenAI).
+6. **Copy** — sao chép nội dung phản hồi mới nhất.
 
-Workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml).
+Account phải **mở khóa** và tab tương ứng nên mở sẵn (dùng **Open Tab** ở tab Accounts nếu cần).
+
+### History
+
+Hiển thị các tin user/assistant gần đây đã lưu khi backend kết nối.
+
+- **Clear History** — xóa toàn bộ history (không hoàn tác từ panel).
+
+## Quy trình thường dùng
+
+1. Mở **app macOS** → backend **Running**.
+2. Mở Chrome → side panel **Connected**.
+3. **Accounts** → thêm từng profile Gemini (detect từ tab đang mở).
+4. **Open Tab** cho account cần dùng.
+5. **Chat** → chọn account → gửi prompt; xem **History** cho các lượt trước.
+6. **Dashboard** → theo dõi busy khi chạy nhiều account.
+
+## Xử lý sự cố
+
+| Vấn đề | Cách xử lý |
+|--------|------------|
+| Panel báo **Disconnected** | Start/restart backend trong app macOS; khớp host/port trong Settings extension. |
+| Cảnh báo lỗi backend | Đọc thông báo trên panel; mở **Logs** trong app macOS. |
+| Detect account thất bại | Tab đang active phải là trang Gemini; refresh và thử lại. |
+| Gửi prompt lỗi | Mở khóa account, mở tab, đợi giao diện Gemini sẵn sàng. |
+| Port đã được dùng | Đổi port trong **Settings** macOS, lưu, cập nhật cùng port trên extension. |
+| Không có history sau chat | Backend phải **Connected** khi gửi; history lưu trên dịch vụ cục bộ. |
 
 ## Tuyên bố miễn trừ trách nhiệm
 
-Dự án được xây dựng thông qua reverse engineering, chỉ phục vụ học tập, nghiên cứu, thử nghiệm cá nhân và kiểm thử nội bộ. Không cấp quyền sử dụng thương mại; không bảo đảm về độ ổn định, tính phù hợp hay kết quả. Tác giả và người duy trì kho mã không chịu trách nhiệm về mọi thiệt hại trực tiếp hoặc gián tiếp, khóa tài khoản, mất dữ liệu, rủi ro pháp lý hoặc khiếu nại từ bên thứ ba phát sinh từ việc sử dụng, sửa đổi, phân phối, triển khai hoặc phụ thuộc vào dự án.
+Dự án chỉ phục vụ học tập, nghiên cứu, thử nghiệm cá nhân và kiểm thử nội bộ. Không cấp quyền sử dụng thương mại; không bảo đảm về độ ổn định, tính phù hợp hay kết quả. Tác giả và người duy trì kho mã không chịu trách nhiệm về mọi thiệt hại trực tiếp hoặc gián tiếp, khóa tài khoản, mất dữ liệu, rủi ro pháp lý hoặc khiếu nại từ bên thứ ba phát sinh từ việc sử dụng, sửa đổi, phân phối, triển khai hoặc phụ thuộc vào dự án.
 
 Không sử dụng dự án theo cách vi phạm điều khoản dịch vụ, thỏa thuận, pháp luật hoặc quy tắc nền tảng. Trước khi dùng cho mục đích thương mại, hãy đọc [LICENSE](LICENSE), các điều khoản liên quan và xác nhận có sự cho phép bằng văn bản của tác giả.
-
-Bản tiếng Anh (tham chiếu pháp lý): [Disclaimer](README.md#disclaimer).
 
 ## Giấy phép
 

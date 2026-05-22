@@ -533,6 +533,8 @@ class _DesktopTray {
 
   final _TrayClickShowsMenu _clickMenu = _TrayClickShowsMenu();
   bool _installed = false;
+  Timer? _refreshDebounce;
+  bool _refreshing = false;
 
   Future<void> install() async {
     try {
@@ -555,17 +557,27 @@ class _DesktopTray {
   }
 
   Future<void> refresh() async {
-    if (!_installed) return;
-    try {
-      await trayManager.setToolTip(_tooltip());
-      await _pushMenu();
-    } catch (e) {
-      debugPrint('Tray refresh error: $e');
-    }
+    // Debounce: state notifications often come in bursts (start → poll →
+    // running). Spamming setContextMenu during a user interaction can drop
+    // an in-flight click. Coalesce updates to a single push.
+    _refreshDebounce?.cancel();
+    _refreshDebounce = Timer(const Duration(milliseconds: 150), () async {
+      if (!_installed || _refreshing) return;
+      _refreshing = true;
+      try {
+        await trayManager.setToolTip(_tooltip());
+        await _pushMenu();
+      } catch (e) {
+        debugPrint('Tray refresh error: $e');
+      } finally {
+        _refreshing = false;
+      }
+    });
   }
 
   Future<void> dispose() async {
     if (!_installed) return;
+    _refreshDebounce?.cancel();
     trayManager.removeListener(_clickMenu);
     _installed = false;
     await trayManager.destroy();
@@ -626,11 +638,7 @@ class _DesktopTray {
             key: 'copy_url',
             label: 'Copy API URL',
             disabled: !running,
-            onClick: (_) async {
-              await Clipboard.setData(
-                ClipboardData(text: 'http://127.0.0.1:${s.port}'),
-              );
-            },
+            onClick: (_) => _copyApiUrl(s),
           ),
           MenuItem.separator(),
 
@@ -639,42 +647,156 @@ class _DesktopTray {
             key: 'start',
             label: 'Start Backend',
             disabled: running || busy,
-            onClick: (_) => s.start(),
+            onClick: (_) => _runBackendAction('start', () => s.start()),
           ),
           MenuItem(
             key: 'restart',
             label: 'Restart Backend',
             disabled: !running,
-            onClick: (_) => s.restart(),
+            onClick: (_) => _runBackendAction('restart', () => s.restart()),
           ),
           MenuItem(
             key: 'stop',
             label: 'Stop Backend',
             disabled: !running,
-            onClick: (_) => s.stop(),
+            onClick: (_) => _runBackendAction('stop', () => s.stop()),
           ),
           MenuItem.separator(),
 
           MenuItem(
             key: 'quit',
             label: 'Quit',
-            onClick: (_) async {
-              await s.stop();
-              await dispose();
-              exit(0);
-            },
+            onClick: (_) => _quitNow(s),
           ),
         ],
       ),
     );
   }
 
-  void _openWindow(int tabIndex) {
-    windowManager.show().then((_) {
-      windowManager.focus();
+  /// Wrap a backend control action with logging + an immediate menu push so
+  /// the disabled/enabled state of Start/Stop/Restart reflects reality
+  /// without waiting for the 150ms debounce.
+  Future<void> _runBackendAction(String label, Future<void> Function() action) async {
+    debugPrint('[tray] $label backend');
+    try {
+      await action();
+      debugPrint('[tray] $label backend ok');
+    } catch (e) {
+      debugPrint('[tray] $label backend failed: $e');
+    } finally {
+      try {
+        if (_installed) {
+          await trayManager.setToolTip(_tooltip());
+          await _pushMenu();
+        }
+      } catch (_) {}
+    }
+  }
+
+  /// Copy `http://127.0.0.1:<port>` to the system clipboard. Flutter's
+  /// Clipboard API can silently fail in a no-window tray app on macOS, so
+  /// we try it first and fall back to pbcopy on macOS.
+  Future<void> _copyApiUrl(AppState s) async {
+    final url = 'http://127.0.0.1:${s.port}';
+    bool ok = false;
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      ok = true;
+    } catch (e) {
+      debugPrint('[tray] Clipboard.setData failed: $e');
+    }
+    if (!ok && Platform.isMacOS) {
+      try {
+        final proc = await Process.start('pbcopy', const []);
+        proc.stdin.write(url);
+        await proc.stdin.close();
+        final code = await proc.exitCode.timeout(const Duration(seconds: 2));
+        ok = code == 0;
+      } catch (e) {
+        debugPrint('[tray] pbcopy fallback failed: $e');
+      }
+    }
+    if (!ok && Platform.isLinux) {
+      for (final cmd in const [
+        ['wl-copy'],
+        ['xclip', '-selection', 'clipboard'],
+        ['xsel', '--clipboard', '--input'],
+      ]) {
+        try {
+          final proc = await Process.start(cmd.first, cmd.sublist(1));
+          proc.stdin.write(url);
+          await proc.stdin.close();
+          final code = await proc.exitCode.timeout(const Duration(seconds: 2));
+          if (code == 0) {
+            ok = true;
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+    debugPrint('[tray] copy api url → $url  (ok=$ok)');
+  }
+
+  Future<void> _quitNow(AppState s) async {
+    // Hard-deadline shutdown. Whatever happens in cleanup the process MUST
+    // terminate within ~1.5s — otherwise the user sees Quit "doing nothing".
+    // setPreventClose is cleared up-front so nothing in the engine layer
+    // blocks the exit, and cleanup is fire-and-bounded.
+    try {
+      await windowManager.setPreventClose(false);
+    } catch (_) {}
+    try {
+      await Future.any<void>([
+        _quitCleanup(s),
+        Future<void>.delayed(const Duration(milliseconds: 1500)),
+      ]);
+    } catch (_) {}
+    exit(0);
+  }
+
+  Future<void> _quitCleanup(AppState s) async {
+    try {
+      await s.stop();
+    } catch (_) {}
+    try {
+      await dispose();
+    } catch (_) {}
+  }
+
+  Future<void> _openWindow(int tabIndex) async {
+    // Set the target tab early. navigateTo only calls setState; safe even
+    // when the shell tree is not yet visible.
+    _shellKey.currentState?.navigateTo(tabIndex);
+
+    try {
+      // Give the tray menu a moment to fully dismiss so macOS can transfer
+      // focus to our window. Without this short yield, the first click often
+      // brings up the menu, the second click only triggers onClick and then
+      // sometimes the window only actually surfaces on the third try.
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+      if (!await windowManager.isVisible()) {
+        await windowManager.show();
+      }
+      await windowManager.focus();
+
+      // macOS background-tray apps sometimes need a second activation kick
+      // because NSApp isn't yet the frontmost app after the menu closes.
+      if (Platform.isMacOS) {
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await windowManager.show();
+        await windowManager.focus();
+      }
+
+      // Ensure the requested tab is selected once the shell rebuilds.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _shellKey.currentState?.navigateTo(tabIndex);
       });
-    });
+    } catch (e) {
+      debugPrint('[tray] _openWindow failed: $e');
+    }
   }
 }

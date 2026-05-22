@@ -1,127 +1,144 @@
-# extract-AI-token
+# Extract Token
 
 > **Tiếng Việt:** [README-vn.md](README-vn.md)
 
-Chrome extension and Rust backend for controlling multiple Gemini accounts in the browser: per-account tabs, busy-state tracking, chat history, and sync over HTTP / WebSocket. An optional **macOS tray app** can launch and supervise the backend process.
+**Extract Token** helps you work with multiple Gemini accounts in Chrome from one place: manage accounts, open the right tab per account, send prompts, and keep chat history—while a small **macOS app** runs the local data service on your machine.
 
-## Project structure
+## What you need
 
-| Directory | Description |
-|-----------|-------------|
-| `extension/` | Chrome extension (WXT + React): side panel, background service worker, Gemini content script |
-| `backend/` | Rust API (Axum): REST + WebSocket, SQLite persistence |
-| `app/` | Flutter macOS tray host — starts/stops the backend binary, health checks on port `8787` |
-| `old/` | Archived reference code (not required to run) |
+| Item | Notes |
+|------|--------|
+| **Google Chrome** | For the Extract Token extension |
+| **macOS** | For the desktop app that runs the local backend (recommended) |
+| **Gemini accounts** | Signed in to [gemini.google.com](https://gemini.google.com) in Chrome |
 
-## Features
+The backend listens on your computer only (default `127.0.0.1:8787`). Account and history data are stored locally in a SQLite database managed by the macOS app.
 
-- **Multi-account Gemini** — one account maps to a URL such as `https://gemini.google.com/u/{index}/app` or a custom `pageRoot`
-- **Tab control** — open/focus tabs per account; tab metadata stored locally in the extension
-- **Content-script automation** — detect account info, send prompts, read responses on Gemini pages
-- **Backend sync** — extension background connects to `ws://{host}:{port}/ws` (default `127.0.0.1:8787`); accounts, history, and busy state persist in SQLite when the backend is up
-- **Side panel UI** — accounts, chat, history, dashboard, backend connection settings
-- **macOS tray app** — background launcher for the compiled `backend` binary (no visible window)
+## Getting started
 
-Provider types in the data model include `gemini` and `chatgpt`; Gemini is the primary integration today.
+### 1. Start the backend (macOS app)
 
-## Requirements
+1. Open **Extract AI Token** on your Mac (from the app package you installed).
+2. The app starts the backend automatically and shows an icon in the **menu bar**.
+3. Confirm status is **Running**:
+   - Click the menu bar icon → **Open Dashboard**, or
+   - Tray menu shows **● Running (port 8787)** (port may differ if you changed it in Settings).
 
-| Component | Requirements |
-|-----------|----------------|
-| Extension | [Node.js](https://nodejs.org/) 20+, Google Chrome |
-| Backend | [Rust](https://www.rust-lang.org/) stable (edition 2024) |
-| macOS app (optional) | [Flutter](https://flutter.dev/) SDK, macOS |
+**Tray menu (menu bar icon):**
 
-## Quick start
+| Action | What it does |
+|--------|----------------|
+| Open Dashboard | Status, API URL, account/history counts |
+| Open Logs | Backend log output |
+| Open Settings | Change port, local vs network bind |
+| Copy API URL | Copies `http://127.0.0.1:<port>` for the extension |
+| Start / Restart / Stop Backend | Control the local service |
 
-### 1. Backend
+Closing the app window hides it; the app keeps running in the tray. Quit fully from the tray menu when you want to stop everything.
 
-**Option A — run from source**
+**Settings (macOS app):**
 
-```bash
-cd backend
-cargo run
-```
+- **Port** — default `8787`; must match the port in the Chrome extension.
+- **Public bind** — off (recommended): only this Mac can connect. On: listens on all interfaces (`0.0.0.0`); use only on trusted networks.
 
-**Option B — macOS tray app** (builds/runs the backend binary from the menu bar)
+After changing port or bind, use **Save & Restart** in Settings.
 
-```bash
-cd app
-flutter run -d macos
-```
+### 2. Install the Chrome extension
 
-Default listen address: `127.0.0.1:8787`. SQLite database: `backend/data/app.db` (or path set by the launcher).
+1. In Chrome, open `chrome://extensions`.
+2. Turn on **Developer mode** (if you install from a local folder).
+3. Click **Load unpacked** and select the `chrome-mv3` folder from your Extract Token package.
+4. Pin the extension if you like; open the **side panel** (extension icon or Chrome side panel menu).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APP_ADDR` | `127.0.0.1:8787` | Bind address |
-| `SQLITE_PATH` | `data/app.db` | SQLite file path (relative to backend cwd) |
-| `RUST_LOG` | `info` | Tracing log level |
+### 3. Connect extension ↔ backend
 
-Verify: `curl http://127.0.0.1:8787/health`
+1. Open the **Extract Token** side panel.
+2. Check the badge in the header:
+   - **Connected** — extension is talking to the backend.
+   - **Disconnected** — backend is off or host/port is wrong.
+3. If disconnected:
+   - Click **Settings** (gear) → set **Host** (`127.0.0.1`) and **Port** (same as the macOS app, usually `8787`) → **Save & Reconnect**.
+   - Or click **Reconnect** (reload icon) after the macOS app shows **Running**.
 
-### 2. Extension
+The panel still opens when the backend is down; accounts and history sync once the connection is back.
 
-```bash
-cd extension
-npm install
-npm run dev
-```
+## Using the side panel
 
-Production build:
+The panel has four tabs. Data refreshes automatically every few seconds.
 
-```bash
-npm run build
-```
+### Dashboard
 
-Load the unpacked extension from `extension/dist/chrome-mv3` in Chrome (`chrome://extensions` → Developer mode → Load unpacked).
+Overview at a glance:
 
-Open the **side panel**, configure backend host/port if needed, and reconnect. The panel stays usable when the backend is offline; persistence syncs once connected.
+- Number of accounts (active / locked)
+- Open Gemini tabs and **busy** accounts (currently processing a prompt)
+- History message count
+- Backend connection (`host:port`, connected or not)
 
-More extension notes: [extension/README.md](extension/README.md).
+Use this tab to see whether everything is healthy before sending chats.
 
-## Backend API
+### Accounts
 
-### REST
+Manage Gemini profiles:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `GET` | `/ws` | WebSocket upgrade |
-| `GET` / `PUT` | `/v1/accounts` | List / upsert accounts |
-| `DELETE` | `/v1/accounts/{id}` | Delete account |
-| `GET` / `PUT` | `/v1/models` | List / upsert model configs |
-| `DELETE` | `/v1/models/{id}` | Delete model |
-| `GET` / `POST` / `DELETE` | `/v1/history` | List / append / clear history |
-| `GET` / `POST` | `/v1/busy` | Get / set busy state |
-| `GET` | `/v1/dashboard` | Dashboard summary |
+1. Click **Add Account**.
+2. In Chrome, open the Gemini tab for the account you want to add (logged in).
+3. In the dialog, click **Detect From Active Gemini Tab** — fills **Page Root** and suggests a **Label** (name, email, tier).
+4. Click **Create**.
 
-### WebSocket message types
+Per account:
 
-Request envelope: `{ "id": "<uuid>", "type": "<command>", "payload": { ... } }`
+| Button | Action |
+|--------|--------|
+| Lock / Unlock | Disabled accounts are skipped for automation |
+| Select | Chooses account for the Chat tab |
+| Open Tab | Opens or focuses the Gemini tab for that account |
+| Delete | Removes the account from storage |
 
-| `type` | Description |
-|--------|-------------|
-| `ping` | Liveness check |
-| `state.get` | Accounts, history (limit 200), busy |
-| `dashboard.get` | Dashboard counters |
-| `models.get` / `model.upsert` / `model.delete` | Model registry |
-| `account.upsert` / `account.delete` | Account CRUD |
-| `history.append` / `history.clear` | History writes |
-| `busy.get` / `busy.set` | Busy flags |
+Each account is tied to a Gemini URL (for example `https://gemini.google.com/u/0/app` or a custom page root).
 
-## CI
+### Chat
 
-GitHub Actions on push/PR to `main` and `master`:
+Send a test prompt through the extension (uses the selected account’s Gemini tab):
 
-- **backend** — `cargo fmt --check`, `clippy`, `test`, `release` build
-- **extension** — `npm ci`, `npm run build`
+1. Choose an **account** in the dropdown.
+2. Type your message in the text box.
+3. Click **Send Prompt** — wait for **Latest response** below.
+4. **Stop** — cancel generation while it is running.
+5. **stream** — optional streaming mode (OpenAI-compatible SSE).
+6. **Copy** — copy the latest response text.
 
-Workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml).
+The account must be **unlocked** and its tab should be open (use **Open Tab** on the Accounts tab if needed).
+
+### History
+
+Shows recent user/assistant messages stored while the backend was connected.
+
+- **Clear History** — removes all stored history (cannot be undone from the panel).
+
+## Typical workflow
+
+1. Start the **macOS app** → backend **Running**.
+2. Open Chrome → **side panel** shows **Connected**.
+3. **Accounts** → add each Gemini profile (detect from the active tab).
+4. **Open Tab** for the account you want to use.
+5. **Chat** → select account → send prompts; check **History** for past turns.
+6. **Dashboard** → monitor busy state when running several accounts.
+
+## Troubleshooting
+
+| Problem | What to try |
+|---------|-------------|
+| **Disconnected** in the panel | Start or restart the backend in the macOS app; match host/port in extension Settings. |
+| Warning about backend error | Read the message in the panel; open **Logs** in the macOS app. |
+| Detect account fails | Active tab must be a Gemini page (`gemini.google.com`); refresh and try again. |
+| Send prompt fails | Unlock account, open its tab, wait until Gemini UI is ready. |
+| Port already in use | Change port in macOS **Settings**, save, then update the same port in the extension. |
+| No history after chat | Backend must be **Connected** when sending; history is stored on the local service. |
 
 ## Disclaimer
 
-This project is built through reverse engineering and is provided for learning, research, personal experimentation, and internal validation only. No commercial authorization is granted, and no warranty of stability, fitness, or results is provided. The author and repository maintainers are not responsible for any direct or indirect loss, account suspension, data loss, legal risk, or third-party claims arising from use, modification, distribution, deployment, or reliance on this project.
+This project is provided for learning, research, personal experimentation, and internal validation only. No commercial authorization is granted, and no warranty of stability, fitness, or results is provided. The author and repository maintainers are not responsible for any direct or indirect loss, account suspension, data loss, legal risk, or third-party claims arising from use, modification, distribution, deployment, or reliance on this project.
 
 Do not use this project in ways that violate service terms, agreements, laws, or platform rules. Before any commercial use, review the [LICENSE](LICENSE), the relevant terms, and confirm that you have the author's written permission.
 

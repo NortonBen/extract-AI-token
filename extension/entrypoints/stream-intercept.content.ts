@@ -309,11 +309,105 @@ function patchBeacon(): void {
   };
 }
 
+/**
+ * Keep the page in "visible / focused" mode even when the tab is backgrounded.
+ *
+ * Chrome still throttles setTimeout/setInterval at the engine level when the
+ * tab is truly hidden, but a lot of web apps (Gemini included) also gate
+ * their own work on document.visibilityState — pausing streams, deferring
+ * UI updates, or short-circuiting fetch handlers. Spoofing the API keeps
+ * those code paths active. Combined with our MutationObserver-driven
+ * detector in content.ts (which is not throttled), this gives reliable
+ * background behaviour without having to activate the tab.
+ */
+function patchVisibility(): void {
+  const w = window as unknown as { __geminiVisibilityPatched?: boolean };
+  if (w.__geminiVisibilityPatched) return;
+  w.__geminiVisibilityPatched = true;
+
+  const visibleProps: Array<[string, unknown]> = [
+    ["hidden", false],
+    ["visibilityState", "visible"],
+    ["webkitHidden", false],
+    ["webkitVisibilityState", "visible"],
+    ["wasDiscarded", false]
+  ];
+  for (const [prop, value] of visibleProps) {
+    try {
+      Object.defineProperty(document, prop, {
+        configurable: true,
+        get: () => value
+      });
+    } catch {
+      // not configurable in some browsers — ignore
+    }
+  }
+
+  try {
+    document.hasFocus = function hasFocus() {
+      return true;
+    } as typeof document.hasFocus;
+  } catch {
+    // ignore
+  }
+
+  // Drop visibilitychange/freeze listeners on document/window so Gemini's
+  // app code never learns the tab was backgrounded.
+  const blockedTypes = new Set([
+    "visibilitychange",
+    "webkitvisibilitychange",
+    "freeze",
+    "resume",
+    "pagehide",
+    "blur"
+  ]);
+  const origAdd = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (
+    this: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions
+  ): void {
+    if (
+      (this === document || this === window) &&
+      typeof type === "string" &&
+      blockedTypes.has(type.toLowerCase())
+    ) {
+      return;
+    }
+    return origAdd.call(this, type, listener as EventListener, options);
+  } as typeof EventTarget.prototype.addEventListener;
+
+  // Some libraries assign to onvisibilitychange/onblur directly. Stub them.
+  const stubProps: Array<[Document | Window, string]> = [
+    [document, "onvisibilitychange"],
+    [document, "onwebkitvisibilitychange"],
+    [document, "onfreeze"],
+    [document, "onresume"],
+    [window, "onblur"],
+    [window, "onpagehide"]
+  ];
+  for (const [target, prop] of stubProps) {
+    try {
+      Object.defineProperty(target, prop, {
+        configurable: true,
+        get: () => null,
+        set: () => {
+          /* swallow */
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export default defineContentScript({
   matches: ["https://gemini.google.com/*"],
   runAt: "document_start",
   world: "MAIN",
   main() {
+    patchVisibility();
     patchFetch();
     patchXHR();
     patchBeacon();
