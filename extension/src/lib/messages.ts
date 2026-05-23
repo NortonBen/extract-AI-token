@@ -1,5 +1,6 @@
 import type {
   Account,
+  AppBehaviorConfig,
   BackendConnectionConfig,
   BackendConnectionStatus,
   ChatResult,
@@ -29,7 +30,9 @@ export type ExtensionMessage =
   | { type: "dashboard.get" }
   | { type: "backend.status.get" }
   | { type: "backend.config.set"; payload: BackendConnectionConfig }
-  | { type: "backend.reconnect" };
+  | { type: "backend.reconnect" }
+  | { type: "behavior.get" }
+  | { type: "behavior.set"; payload: Partial<AppBehaviorConfig> };
 
 export type ExtensionMessageResponse =
   | { ok: true; state: ExtensionState }
@@ -50,5 +53,6 @@ export type ExtensionMessageResponse =
   | { ok: true; result: ChatResult }
   | { ok: true; exec: GeminiExecutorResult }
   | { ok: true; backend: BackendConnectionStatus }
+  | { ok: true; behavior: AppBehaviorConfig }
   | { ok: true }
   | { ok: false; error: string };

@@ -1,12 +1,24 @@
-import type { AccountTab, BackendConnectionConfig } from "./types";
+import type {
+  AccountTab,
+  AppBehaviorConfig,
+  AfterChatBehavior,
+  BackendConnectionConfig
+} from "./types";
 
 const TABS_KEY = "ai_browser_extension_tabs";
 const BACKEND_CONFIG_KEY = "ai_browser_backend_config";
+const BEHAVIOR_CONFIG_KEY = "ai_browser_behavior_config";
 
 const defaultBackendConfig: BackendConnectionConfig = {
   host: "127.0.0.1",
   port: 9516
 };
+
+const defaultBehaviorConfig: AppBehaviorConfig = {
+  afterChat: "new_tab"
+};
+
+const VALID_AFTER_CHAT: AfterChatBehavior[] = ["new_tab", "reload", "keep"];
 
 export async function getTabs(): Promise<AccountTab[]> {
   const data = await chrome.storage.local.get(TABS_KEY);
@@ -45,6 +57,29 @@ export async function setBackendConfig(config: BackendConnectionConfig): Promise
   };
   await chrome.storage.local.set({ [BACKEND_CONFIG_KEY]: normalized });
   return normalized;
+}
+
+export async function getBehaviorConfig(): Promise<AppBehaviorConfig> {
+  const data = await chrome.storage.local.get(BEHAVIOR_CONFIG_KEY);
+  const raw = data[BEHAVIOR_CONFIG_KEY] as Partial<AppBehaviorConfig> | undefined;
+  if (!raw) return { ...defaultBehaviorConfig };
+  const afterChat: AfterChatBehavior = VALID_AFTER_CHAT.includes(raw.afterChat as AfterChatBehavior)
+    ? (raw.afterChat as AfterChatBehavior)
+    : defaultBehaviorConfig.afterChat;
+  return { afterChat };
+}
+
+export async function setBehaviorConfig(
+  partial: Partial<AppBehaviorConfig>
+): Promise<AppBehaviorConfig> {
+  const current = await getBehaviorConfig();
+  const next: AppBehaviorConfig = {
+    afterChat: VALID_AFTER_CHAT.includes(partial.afterChat as AfterChatBehavior)
+      ? (partial.afterChat as AfterChatBehavior)
+      : current.afterChat
+  };
+  await chrome.storage.local.set({ [BEHAVIOR_CONFIG_KEY]: next });
+  return next;
 }
 
 export function createAccountId(provider: "gemini" | "chatgpt", userIndex: number): string {

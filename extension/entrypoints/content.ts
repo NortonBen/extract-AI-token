@@ -616,6 +616,54 @@ function fireDoneResolvers(text: string): void {
   }
 }
 
+/**
+ * Tracks how many StreamGenerate fetch/XHR requests are currently in flight
+ * inside the page (reported by the MAIN-world interceptor via postMessage).
+ * Background.ts uses this through `gemini.tab.busy_check` to decide whether
+ * it's safe to reload the page (must be 0 — otherwise the request is
+ * aborted mid-stream).
+ */
+let activeStreamCount = 0;
+type IdleResolver = () => void;
+const idleResolvers: IdleResolver[] = [];
+
+function setActiveStreamCount(n: number): void {
+  if (!Number.isFinite(n) || n < 0) return;
+  const prev = activeStreamCount;
+  activeStreamCount = n;
+  if (n === 0 && prev !== 0) {
+    const resolvers = idleResolvers.splice(0);
+    for (const r of resolvers) {
+      try {
+        r();
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function waitForStreamIdle(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (activeStreamCount === 0) {
+      resolve(true);
+      return;
+    }
+    let done = false;
+    const finish = (idle: boolean) => {
+      if (done) return;
+      done = true;
+      const idx = idleResolvers.indexOf(onIdle);
+      if (idx >= 0) idleResolvers.splice(idx, 1);
+      clearTimeout(timer);
+      resolve(idle);
+    };
+    const onIdle: IdleResolver = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    idleResolvers.push(onIdle);
+  });
+}
+
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
@@ -687,6 +735,11 @@ window.addEventListener("message", (event) => {
       });
       fireDoneResolvers(streamState.text);
       break;
+    case "active-count": {
+      const count = (payload as { count?: number }).count;
+      if (typeof count === "number") setActiveStreamCount(count);
+      break;
+    }
   }
 });
 
@@ -928,6 +981,21 @@ export default defineContentScript({
       if (message?.type === "gemini.chat.stop") {
         const clicked = clickStopButton();
         sendResponse({ ok: true, clicked });
+        return true;
+      }
+      if (message?.type === "gemini.tab.busy_check") {
+        sendResponse({
+          ok: true,
+          busy: activeStreamCount > 0,
+          activeCount: activeStreamCount
+        });
+        return true;
+      }
+      if (message?.type === "gemini.tab.wait_idle") {
+        const timeoutMs = Number(message.payload?.timeoutMs) || 15000;
+        waitForStreamIdle(timeoutMs).then((idle) => {
+          sendResponse({ ok: true, idle, activeCount: activeStreamCount });
+        });
         return true;
       }
       if (message?.type === "gemini.chat.prepare") {

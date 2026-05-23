@@ -339,6 +339,72 @@ function resolveFetchUrl(input: RequestInfo | URL): string {
   return "";
 }
 
+// ---------------------------------------------------------------------------
+// StreamGenerate in-flight tracking
+// ---------------------------------------------------------------------------
+// `activeStreamRequests` reflects *every* StreamGenerate request currently
+// flying — independent of whether the extension armed a session. The
+// background SW reads this to decide if a tab is busy at the HTTP layer
+// (e.g. before reloading the page in "reload after chat" mode).
+//
+// Each member is a short token we mint on entry into patchedFetch /
+// XHR.send for any StreamGenerate URL, and remove when the response is
+// fully consumed or aborted. Count changes are broadcast via postMessage
+// so the isolated content script can react without polling.
+
+const activeStreamRequests = new Set<string>();
+
+function newStreamTrackingId(): string {
+  return `sg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function emitActiveStreams(): void {
+  emit({ type: "active-count", count: activeStreamRequests.size });
+}
+
+function trackStreamStart(id: string): void {
+  activeStreamRequests.add(id);
+  emitActiveStreams();
+}
+
+function trackStreamEnd(id: string): void {
+  if (activeStreamRequests.delete(id)) {
+    emitActiveStreams();
+  }
+}
+
+// Snapshot the original addEventListener before patchVisibility() can
+// install its filter (which drops pagehide listeners on document/window).
+// We use the snapshot to register our own unload cleanup, which would
+// otherwise be silently no-op'd.
+const origAddEventListenerRef = EventTarget.prototype.addEventListener;
+
+function registerUnloadCleanup(): void {
+  try {
+    origAddEventListenerRef.call(
+      window,
+      "pagehide",
+      () => {
+        // Page is unloading (e.g. our "reload after chat" flow). Drain the
+        // tracker so the isolated-world bridge sees count=0 right before
+        // the document is torn down. The hook re-applies automatically at
+        // the next document_start run.
+        if (activeStreamRequests.size > 0) {
+          activeStreamRequests.clear();
+          emitActiveStreams();
+        }
+        if (activeSession) {
+          dbg("page_unload_disarm", { requestId: activeSession.requestId });
+          disarmSession();
+        }
+      },
+      { capture: true }
+    );
+  } catch {
+    // best effort
+  }
+}
+
 function patchFetch(): void {
   const w = window as unknown as { __geminiStreamPatched?: boolean; fetch: typeof fetch };
   if (w.__geminiStreamPatched) return;
@@ -351,23 +417,50 @@ function patchFetch(): void {
     if (isNoopUrl(url)) return emptyOkResponse(url);
 
     const isStream = isGeminiStreamGenerateUrl(url);
+    let trackingId: string | null = null;
     if (isStream) {
+      trackingId = newStreamTrackingId();
+      trackStreamStart(trackingId);
       dbg("fetch_stream_seen", {
         url: truncateUrl(url, 200),
         armed: isArmed(),
-        requestId: activeSession?.requestId
+        requestId: activeSession?.requestId,
+        trackingId
       });
     }
-    const response = await origFetch(input as RequestInfo, init);
+    let response: Response;
+    try {
+      response = await origFetch(input as RequestInfo, init);
+    } catch (err) {
+      if (trackingId) trackStreamEnd(trackingId);
+      throw err;
+    }
 
     if (!isStream) return response;
     if (!response.body) {
+      if (trackingId) trackStreamEnd(trackingId);
       dbg("fetch_pass_no_body", { url: truncateUrl(url, 200) });
       return response;
     }
     if (!isArmed()) {
-      dbg("fetch_pass_not_armed", { url: truncateUrl(url, 200) });
-      return response;
+      // Even an unarmed StreamGenerate is HTTP-level busy. Decrement when
+      // the page is done reading the original response body — wrap that
+      // branch in a passthrough TransformStream so we can observe close.
+      const tracker = trackingId;
+      const passthrough = new TransformStream({
+        flush() {
+          if (tracker) trackStreamEnd(tracker);
+        }
+      });
+      response.body.pipeTo(passthrough.writable).catch(() => {
+        if (tracker) trackStreamEnd(tracker);
+      });
+      dbg("fetch_pass_not_armed", { url: truncateUrl(url, 200), trackingId: tracker });
+      return new Response(passthrough.readable, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
+      });
     }
 
     try {
@@ -375,18 +468,24 @@ function patchFetch(): void {
       const requestId = session.requestId;
       dbg("fetch_stream_tee", { requestId, url: truncateUrl(url, 200) });
       const [appBranch, ourBranch] = response.body.tee();
-      consumeStreamBranch(ourBranch, requestId).catch((err: unknown) => {
-        dbg("consume_unhandled", {
-          requestId,
-          error: err instanceof Error ? err.message : String(err)
+      const tracker = trackingId;
+      consumeStreamBranch(ourBranch, requestId)
+        .catch((err: unknown) => {
+          dbg("consume_unhandled", {
+            requestId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        })
+        .finally(() => {
+          if (tracker) trackStreamEnd(tracker);
         });
-      });
       return new Response(appBranch, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers
       });
     } catch {
+      if (trackingId) trackStreamEnd(trackingId);
       return response;
     }
   };
@@ -432,6 +531,7 @@ function patchXHR(): void {
       __geminiUrl?: string;
       __geminiStream?: boolean;
       __geminiStreamHooked?: boolean;
+      __geminiTrackingId?: string;
     },
     body?: Document | XMLHttpRequestBodyInit | null
   ): void {
@@ -441,9 +541,24 @@ function patchXHR(): void {
     }
 
     if (this.__geminiStream) {
+      // Track HTTP-level busyness for every StreamGenerate XHR, regardless
+      // of whether the extension armed a session.
+      const tracker = newStreamTrackingId();
+      this.__geminiTrackingId = tracker;
+      trackStreamStart(tracker);
+      const finish = () => {
+        if (this.__geminiTrackingId) {
+          trackStreamEnd(this.__geminiTrackingId);
+          this.__geminiTrackingId = undefined;
+        }
+      };
+      this.addEventListener("loadend", finish);
+      this.addEventListener("error", finish);
+      this.addEventListener("abort", finish);
       dbg("xhr_stream_seen", {
         url: truncateUrl(this.__geminiUrl || "", 200),
-        armed: isArmed()
+        armed: isArmed(),
+        trackingId: tracker
       });
     }
 
@@ -578,10 +693,15 @@ export default defineContentScript({
     };
 
     installStreamDebugGlobal("intercept");
+    // Register unload cleanup BEFORE patchVisibility — it filters pagehide.
+    registerUnloadCleanup();
     patchVisibility();
     patchFetch();
     patchXHR();
     patchBeacon();
+    // Re-broadcast current count so a freshly (re)injected isolated content
+    // script doesn't think the previous count is still in effect.
+    emitActiveStreams();
 
     w.__extractTokenStreamProbe = () => ({
       fetchPatched: Boolean(w.__geminiStreamPatched),

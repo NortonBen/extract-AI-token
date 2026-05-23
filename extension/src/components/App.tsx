@@ -9,6 +9,7 @@ import {
   Form,
   Input,
   Modal,
+  Select,
   Space,
   Statistic,
   Tag,
@@ -39,12 +40,15 @@ import {
   resetTokenUsage,
   setAccountEnabled,
   setBackendConfig,
+  getBehaviorConfig,
+  setBehaviorConfig,
   sendPrompt,
   stopPrompt,
   upsertAccount
 } from "../lib/extension-api";
 import { createAccountId, getBackendConfig, getTabs } from "../lib/storage";
 import type {
+  AfterChatBehavior,
   BackendConnectionStatus,
   DashboardSummary,
   ExtensionState,
@@ -115,6 +119,7 @@ export function App() {
   const [addAccountError, setAddAccountError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [streamEnabled, setStreamEnabled] = useState(false);
+  const [afterChat, setAfterChat] = useState<AfterChatBehavior>("new_tab");
 
   const [settingsForm] = Form.useForm<{ host: string; port: string }>();
   const [accountForm] = Form.useForm<{ pageRoot: string; label: string }>();
@@ -182,6 +187,9 @@ export function App() {
     accountForm.setFieldsValue({ pageRoot: "", label: "Gemini User" });
     void hydrateLocal();
     void refreshFromBackend();
+    getBehaviorConfig()
+      .then((cfg) => setAfterChat(cfg.afterChat))
+      .catch(() => {});
     const timer = window.setInterval(() => {
       void refreshFromBackend();
     }, 3000);
@@ -189,6 +197,16 @@ export function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  async function onChangeAfterChat(value: AfterChatBehavior) {
+    setAfterChat(value);
+    try {
+      const cfg = await setBehaviorConfig({ afterChat: value });
+      setAfterChat(cfg.afterChat);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save behavior failed");
+    }
+  }
 
   async function onCreateAccount(values: { pageRoot: string; label: string }) {
     const pageRoot = values.pageRoot.trim();
@@ -469,6 +487,32 @@ export function App() {
             <Input placeholder="9516" />
           </Form.Item>
         </Form>
+        <Divider style={{ margin: "16px 0" }} />
+        <Title level={5} style={{ marginTop: 0 }}>
+          After each chat
+        </Title>
+        <Select
+          style={{ width: "100%" }}
+          value={afterChat}
+          onChange={onChangeAfterChat}
+          options={[
+            {
+              value: "new_tab",
+              label: "Open a new tab",
+              title: "Close the Gemini tab after each successful chat; next prompt opens a fresh tab."
+            },
+            {
+              value: "reload",
+              label: "Reload the page (new chat)",
+              title: "Click \"New chat\" in the same tab so the next prompt uses a clean conversation."
+            },
+            {
+              value: "keep",
+              label: "Keep the same tab",
+              title: "Do nothing — the next prompt reuses the existing tab/conversation."
+            }
+          ]}
+        />
         <Divider style={{ margin: "16px 0" }} />
         <Title level={5} style={{ marginTop: 0 }}>
           Thống kê (lưu riêng)

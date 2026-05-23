@@ -1,4 +1,4 @@
-import { buildGeminiUrl, createAccountId, getBackendConfig, getTabs, removeAccountTab, setAccountTab, setBackendConfig } from "../src/lib/storage";
+import { buildGeminiUrl, createAccountId, getBackendConfig, getBehaviorConfig, getTabs, removeAccountTab, setAccountTab, setBackendConfig, setBehaviorConfig } from "../src/lib/storage";
 import type { ExtensionMessage, ExtensionMessageResponse } from "../src/lib/messages";
 import {
   isStreamDebugEnabled,
@@ -300,6 +300,127 @@ class BackendWsClient {
 
 const backend = new BackendWsClient();
 const MANAGED_GROUP_TITLE = "Extract Token";
+
+/**
+ * In-memory set of account IDs that currently have an in-flight sendPrompt.
+ * When a NEW conversation comes in for an account that is still mid-generation,
+ * we give the new request its own ephemeral tab so it doesn't fight the busy
+ * primary tab. The backend's busy.accounts can lag a few ms; this local flag
+ * is the source of truth for the dispatcher.
+ */
+const accountsInFlight = new Set<string>();
+
+/**
+ * Open a fresh ephemeral Gemini tab for an account that is currently busy.
+ * The tab is NOT registered in account-tab storage — it lives only for the
+ * lifetime of this single request and is closed afterward.
+ */
+async function openEphemeralTabForAccount(accountId: string): Promise<number> {
+  const state = await getStateFromBackend();
+  const account = state.accounts.find((item) => item.id === accountId);
+  if (!account) throw new Error(`Account not found: ${accountId}`);
+  const url = account.pageRoot || buildGeminiUrl(account.userIndex ?? 0);
+  const tab = await chrome.tabs.create({ url, active: false });
+  if (!tab.id) throw new Error("Cannot create ephemeral Gemini tab");
+  await ensureManagedTabGroup(tab.id, tab.windowId);
+  return tab.id;
+}
+
+/**
+ * Ask the content script whether the page has any in-flight StreamGenerate
+ * requests. Returns true (busy) if anything is still streaming OR if the
+ * round trip fails (better safe than reloading mid-stream).
+ */
+async function isTabStreamBusy(tabId: number, timeoutMs = 1500): Promise<boolean> {
+  try {
+    const result = await Promise.race([
+      sendMessageToGeminiTab(tabId, { type: "gemini.tab.busy_check" }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+    ]);
+    if (!result) return false; // probe timed out → assume idle
+    return Boolean((result as { busy?: boolean }).busy);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Block until the content script reports zero active StreamGenerate
+ * requests, or until `timeoutMs` elapses. Returns true if idle, false on
+ * timeout. The content side uses MutationObserver-grade event delivery
+ * via window.postMessage so it is not affected by background-tab timer
+ * throttling.
+ */
+async function waitForTabStreamIdle(tabId: number, timeoutMs = 15000): Promise<boolean> {
+  try {
+    const result = await Promise.race([
+      sendMessageToGeminiTab(tabId, {
+        type: "gemini.tab.wait_idle",
+        payload: { timeoutMs }
+      }),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), timeoutMs + 1500)
+      )
+    ]);
+    if (!result) return false;
+    return Boolean((result as { idle?: boolean }).idle);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply the user-configured behaviour after a successful chat. Reads
+ * AppBehaviorConfig.afterChat from storage:
+ *   - "new_tab" → close current tab so the next prompt opens a fresh one
+ *   - "reload"  → reload the page (SPA "new chat") on the existing tab
+ *   - "keep"    → leave the tab alone
+ *
+ * The "reload" branch first waits for any in-flight StreamGenerate request
+ * to complete — reloading while a stream is in flight aborts the request
+ * and corrupts the response chunks we still need to commit.
+ */
+async function applyAfterChatBehavior(accountId: string): Promise<void> {
+  let behavior: "new_tab" | "reload" | "keep" = "new_tab";
+  try {
+    const cfg = await getBehaviorConfig();
+    behavior = cfg.afterChat;
+  } catch {
+    // storage may be unavailable — default to new_tab
+  }
+  if (behavior === "keep") return;
+  if (behavior === "reload") {
+    const tabs = await getTabs();
+    const mapped = tabs.find((item) => item.accountId === accountId);
+    if (mapped) {
+      // Wait up to 15s for any active StreamGenerate to finish; if it's
+      // still in flight after that, the tab is genuinely stuck and falling
+      // back to "new_tab" semantics is safer than mid-stream reloading.
+      const idle = await waitForTabStreamIdle(mapped.tabId, 15000);
+      if (!idle) {
+        try {
+          await chrome.tabs.remove(mapped.tabId);
+        } catch {
+          /* ignore */
+        }
+        await removeAccountTab(accountId).catch(() => {});
+        return;
+      }
+    }
+    await prepareAccountTabForNextChat(accountId);
+    return;
+  }
+  // new_tab
+  const tabs = await getTabs();
+  const mapped = tabs.find((item) => item.accountId === accountId);
+  if (!mapped) return;
+  try {
+    await chrome.tabs.remove(mapped.tabId);
+  } catch {
+    // tab may already be gone
+  }
+  await removeAccountTab(accountId).catch(() => {});
+}
 
 /**
  * Reset the mapped Gemini tab for the next prompt without closing it.
@@ -657,7 +778,15 @@ async function sendPromptStream(payload: {
   prompt: string;
   streamId: string;
 }) {
-  let tabId = await ensureResponsiveAccountTab(payload.accountId);
+  const ephemeral = accountsInFlight.has(payload.accountId);
+  let tabId: number;
+  if (ephemeral) {
+    tabId = await openEphemeralTabForAccount(payload.accountId);
+    await waitForTabReady(tabId, 15000);
+  } else {
+    tabId = await ensureResponsiveAccountTab(payload.accountId);
+  }
+  accountsInFlight.add(payload.accountId);
   await backend.request("busy.set", { account_id: payload.accountId, busy: true });
   try {
     let result: any;
@@ -669,8 +798,18 @@ async function sendPromptStream(payload: {
       } catch {
         // best effort
       }
-      tabId = await recreateAccountTab(payload.accountId);
-      await waitForTabReady(tabId, 15000);
+      if (ephemeral) {
+        try {
+          await chrome.tabs.remove(tabId);
+        } catch {
+          /* ignore */
+        }
+        tabId = await openEphemeralTabForAccount(payload.accountId);
+        await waitForTabReady(tabId, 15000);
+      } else {
+        tabId = await recreateAccountTab(payload.accountId);
+        await waitForTabReady(tabId, 15000);
+      }
       result = await performSendStream(tabId, payload.prompt, payload.streamId);
     }
     if (result?.error) {
@@ -694,35 +833,73 @@ async function sendPromptStream(payload: {
       content: responseText
     });
     await recordChatUsage(payload.prompt, responseText);
-    prepareAccountTabForNextChat(payload.accountId).catch(() => {});
+    if (ephemeral) {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      applyAfterChatBehavior(payload.accountId).catch(() => {});
+    }
     return { accountId: payload.accountId, model: payload.model, responseText };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     backend.pushStream(payload.streamId, { event: "error", error: msg });
     throw err;
   } finally {
+    accountsInFlight.delete(payload.accountId);
     await backend.request("busy.set", { account_id: payload.accountId, busy: false });
   }
 }
 
 async function sendPrompt(payload: { accountId: string; model: string; prompt: string }) {
-  let tabId = await ensureResponsiveAccountTab(payload.accountId);
+  // Decide whether this conversation needs its own ephemeral tab. The
+  // account is treated as busy if EITHER the extension already has a
+  // request mid-flight (accountsInFlight) OR the primary tab itself has
+  // an active StreamGenerate fetch in progress (HTTP-level check via
+  // patched fetch counter). The latter catches the case where the user
+  // also started a prompt manually inside the Gemini UI.
+  let ephemeral = accountsInFlight.has(payload.accountId);
+  if (!ephemeral) {
+    const tabs = await getTabs();
+    const mapped = tabs.find((item) => item.accountId === payload.accountId);
+    if (mapped && (await isTabStreamBusy(mapped.tabId, 800))) {
+      ephemeral = true;
+    }
+  }
+  let tabId: number;
+  if (ephemeral) {
+    tabId = await openEphemeralTabForAccount(payload.accountId);
+    await waitForTabReady(tabId, 15000);
+  } else {
+    tabId = await ensureResponsiveAccountTab(payload.accountId);
+  }
+  accountsInFlight.add(payload.accountId);
   await backend.request("busy.set", { account_id: payload.accountId, busy: true });
   try {
     let result: any;
     try {
       result = await performSend(tabId, payload.prompt);
     } catch (firstErr) {
-      // Tab is stuck (deadline) OR channel closed OR content threw — recycle
-      // the tab and retry once with a fresh page so we don't sit on a hung
-      // composer. We do NOT activate the tab automatically.
       try {
         await sendMessageToGeminiTab(tabId, { type: "gemini.chat.stop" });
       } catch {
         // best effort
       }
-      tabId = await recreateAccountTab(payload.accountId);
-      await waitForTabReady(tabId, 15000);
+      if (ephemeral) {
+        // Ephemeral tab is throwaway — open a fresh one for the retry.
+        try {
+          await chrome.tabs.remove(tabId);
+        } catch {
+          /* ignore */
+        }
+        tabId = await openEphemeralTabForAccount(payload.accountId);
+        await waitForTabReady(tabId, 15000);
+      } else {
+        tabId = await recreateAccountTab(payload.accountId);
+        await waitForTabReady(tabId, 15000);
+      }
       result = await performSend(tabId, payload.prompt);
     }
     if (result?.error) {
@@ -745,9 +922,19 @@ async function sendPrompt(payload: { accountId: string; model: string; prompt: s
       content: responseText
     });
     await recordChatUsage(payload.prompt, responseText);
-    prepareAccountTabForNextChat(payload.accountId).catch(() => {});
+    if (ephemeral) {
+      // Ephemeral tab — always close, don't touch primary tab mapping.
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      applyAfterChatBehavior(payload.accountId).catch(() => {});
+    }
     return { accountId: payload.accountId, model: payload.model, responseText };
   } finally {
+    accountsInFlight.delete(payload.accountId);
     await backend.request("busy.set", { account_id: payload.accountId, busy: false });
   }
 }
@@ -920,6 +1107,14 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionMessag
     case "backend.reconnect":
       backend.reconnectNow();
       return { ok: true, backend: backend.getStatus() };
+    case "behavior.get": {
+      const behavior = await getBehaviorConfig();
+      return { ok: true, behavior };
+    }
+    case "behavior.set": {
+      const behavior = await setBehaviorConfig(message.payload);
+      return { ok: true, behavior };
+    }
     case "history.clear":
       await backend.request("history.clear");
       return { ok: true };

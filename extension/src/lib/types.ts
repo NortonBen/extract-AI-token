@@ -69,6 +69,12 @@ export interface BackendConnectionConfig {
   port: number;
 }
 
+export type AfterChatBehavior = "new_tab" | "reload" | "keep";
+
+export interface AppBehaviorConfig {
+  afterChat: AfterChatBehavior;
+}
+
 export interface BackendConnectionStatus extends BackendConnectionConfig {
   connected: boolean;
   lastError: string | null;

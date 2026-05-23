@@ -1,5 +1,6 @@
 import type { ExtensionMessage, ExtensionMessageResponse } from "./messages";
 import type {
+  AppBehaviorConfig,
   BackendConnectionConfig,
   BackendConnectionStatus,
   ChatResult,
@@ -121,4 +122,16 @@ export async function reconnectBackend(): Promise<BackendConnectionStatus> {
   const res = await send({ type: "backend.reconnect" });
   if (!res.ok || !("backend" in res)) throw new Error((res as any).error || "backend.reconnect failed");
   return res.backend;
+}
+
+export async function getBehaviorConfig(): Promise<AppBehaviorConfig> {
+  const res = await send({ type: "behavior.get" });
+  if (!res.ok || !("behavior" in res)) throw new Error((res as any).error || "behavior.get failed");
+  return res.behavior;
+}
+
+export async function setBehaviorConfig(payload: Partial<AppBehaviorConfig>): Promise<AppBehaviorConfig> {
+  const res = await send({ type: "behavior.set", payload });
+  if (!res.ok || !("behavior" in res)) throw new Error((res as any).error || "behavior.set failed");
+  return res.behavior;
 }
