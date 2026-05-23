@@ -1,45 +1,41 @@
 # Release v0.0.3
 
-**Tag:** `v0.0.3`  
+**Tag:** `v0.0.3`
 **Date:** 2026-05-22
 
-## Tóm tắt (Tiếng Việt)
+## Summary
 
-Bản **0.0.3** tập trung vào **automation Gemini ổn định hơn**: extension **giữ tab** giữa các prompt, mở **cuộc trò chuyện mới** qua sidebar (không reload cả trang), và desktop cải thiện **tắt backend** khi thoát app.
+Release **0.0.3** focuses on **more stable Gemini automation**: the extension **keeps the tab open** between prompts, opens a **new conversation** through the SPA sidebar instead of reloading the page, and the desktop app **shuts the backend down cleanly** on quit.
 
-### Điểm nổi bật
+## Highlights
 
-| Thành phần | Thay đổi |
-|------------|----------|
-| **Extension** | Tái sử dụng tab sau mỗi chat; `prepare` click `Cuộc trò chuyện mới` (`aria-label`, `href="/app"`). |
-| **Extension** | Vẫn `recreateAccountTab` khi tab kẹt / timeout / channel đóng. |
-| **Desktop** | Shutdown backend sạch hơn; binary nhúng qua `backend_binary.dart`. |
-| **CI** | Tag `v0.0.3` → extension zip, backend đa nền, app macOS/Windows/Linux, Docker GHCR. |
+| Area | What changed |
+|------|--------------|
+| **Extension** | Reuse the same tab after each chat; the prepare step clicks **New chat** via `aria-label` and `href="/app"`. |
+| **Extension** | Still falls back to `recreateAccountTab` when the tab is stuck, times out, or the message channel closes. |
+| **Desktop** | Cleaner backend shutdown; embedded binary wired through `backend_binary.dart`. |
+| **CI** | Tagging `v0.0.3` builds the extension zip, multi-platform backends, macOS/Windows/Linux apps, and the GHCR Docker image. |
 
-### Cài nhanh
+## Install
 
-1. Tải asset từ [GitHub Releases](https://github.com/NortonBen/extract-AI-token/releases/tag/v0.0.3).
-2. **Desktop (khuyến nghị):** DMG/zip macOS → mở app → backend cổng `9516`.
-3. **Extension:** giải nén `ai-browser-extension-0.0.3-chrome.zip` (hoặc tên tương tự từ CI) → `chrome://extensions` → Load unpacked (hoặc cập nhật bản đã load).
-4. **Chỉ backend:** zip/tar.gz `extract-ai-token-backend-*` hoặc Docker bên dưới.
+1. Download the assets from [GitHub Releases](https://github.com/NortonBen/extract-AI-token/releases/tag/v0.0.3).
+2. **Desktop (recommended):** macOS DMG/zip → open the app → backend listens on port `9516`.
+3. **Extension:** unzip `ai-browser-extension-0.0.3-chrome.zip` (or the equivalent CI name) → `chrome://extensions` → **Load unpacked** (or update the existing one).
+4. **Backend only:** the `extract-ai-token-backend-*` zip/tarball, or the Docker image below.
 
-### Docker
+## Docker
 
 ```bash
 docker pull ghcr.io/nortonben/extract-ai-token:0.0.3
 docker compose up -d
 ```
 
-Chi tiết: [DOCKER.md](DOCKER.md).
+Full instructions: [DOCKER.md](DOCKER.md).
 
-### Nâng cấp từ 0.0.2
+## Upgrade from 0.0.2
 
-- Reload extension sau khi cài bản zip mới (hoặc build local `npm run build` trong `extension/`).
-- Không cần đổi cấu hình backend nếu vẫn dùng `127.0.0.1:9516`.
-- Tab Gemini có thể **ở lại** trong nhóm **Extract Token** giữa các lần gửi prompt — hành vi mới so với 0.0.2 (trước đây đóng tab sau mỗi chat).
+- Reload the extension after installing the new zip (or rebuild locally with `npm run build` in `extension/`).
+- No backend configuration change is needed if you stay on `127.0.0.1:9516`.
+- The Gemini tab now **stays inside the Extract Token group between prompts** — different from 0.0.2, which closed the tab after every chat.
 
----
-
-## English summary
-
-**Extension:** Reuse Gemini tabs between automated prompts; after each successful chat, reset via in-page **New chat** navigation instead of closing the tab or full page reload. **Desktop:** Cleaner backend shutdown on quit; embedded binary wiring. See [CHANGELOG.md](../CHANGELOG.md).
+See [CHANGELOG.md](../CHANGELOG.md) for the full list of changes.
